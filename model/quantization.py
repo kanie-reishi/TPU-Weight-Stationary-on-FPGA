@@ -179,12 +179,12 @@ def quantize_bias(tensor: np.ndarray, acc_scale: float) -> np.ndarray:
 # ==============================================================================
 def to_hex_int8(arr: np.ndarray) -> list[str]:
     """INT8 array -> list of 2-char hex strings (two's complement)."""
-    return [f"{v & 0xFF:02X}" for v in arr.flatten().astype(np.int8)]
+    return [f"{v:02X}" for v in arr.flatten().astype(np.int8).view(np.uint8)]
 
 
 def to_hex_int32(arr: np.ndarray) -> list[str]:
     """INT32 array -> list of 8-char hex strings (big-endian two's complement)."""
-    return [f"{v & 0xFFFFFFFF:08X}" for v in arr.flatten().astype(np.int32)]
+    return [f"{v:08X}" for v in arr.flatten().astype(np.int32).view(np.uint32)]
 
 
 def write_hex(lines: list[str], path: Path) -> None:
