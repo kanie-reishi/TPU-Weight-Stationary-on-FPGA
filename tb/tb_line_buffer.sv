@@ -120,7 +120,53 @@ module tb_line_buffer;
                      pixel_count, pixel_count + 1,
                      dut.r_col_ptr,
                      pixel_count / IMG_W, pixel_count % IMG_W);
+
+            // ---------------------------------------------------------
+            // Line Buffer Read/Write Log at current col_ptr
+            // Shows what was READ from each LB (fed into window col 4)
+            // and what was WRITTEN back (from window col 0 overflow)
+            // ---------------------------------------------------------
+            $display("  LB R/W @ col_ptr=%0d:", dut.r_col_ptr);
+            $display("    LB1: read -> win[1][4] = %3d | win[0][0] = %3d -> write LB1",
+                     dut.r_lb_1[dut.r_col_ptr], dut.r_window_arr[0][0]);
+            $display("    LB2: read -> win[2][4] = %3d | win[1][0] = %3d -> write LB2",
+                     dut.r_lb_2[dut.r_col_ptr], dut.r_window_arr[1][0]);
+            $display("    LB3: read -> win[3][4] = %3d | win[2][0] = %3d -> write LB3",
+                     dut.r_lb_3[dut.r_col_ptr], dut.r_window_arr[2][0]);
+            $display("    LB4: read -> win[4][4] = %3d | win[3][0] = %3d -> write LB4",
+                     dut.r_lb_4[dut.r_col_ptr], dut.r_window_arr[3][0]);
+
+            // ---------------------------------------------------------
+            // Waterfall Data Flow Trace
+            // Visualizes the cascade: pixel_in -> LB1 -> LB2 -> LB3 -> LB4
+            // ---------------------------------------------------------
+            $display("  Waterfall: pixel_in(%0d) -> LB1[%0d](%0d) -> LB2[%0d](%0d) -> LB3[%0d](%0d) -> LB4[%0d](%0d)",
+                     pixel_count + 1,
+                     dut.r_col_ptr, dut.r_lb_1[dut.r_col_ptr],
+                     dut.r_col_ptr, dut.r_lb_2[dut.r_col_ptr],
+                     dut.r_col_ptr, dut.r_lb_3[dut.r_col_ptr],
+                     dut.r_col_ptr, dut.r_lb_4[dut.r_col_ptr]);
+
             print_window();
+
+            // ---------------------------------------------------------
+            // Full Line Buffer Dump at key milestones
+            // ---------------------------------------------------------
+            // After first row is complete (col_ptr wraps back to 0)
+            if (pixel_count == IMG_W - 1) begin
+                $display(">>> MILESTONE: First row complete. Full LB state:");
+                print_line_buffers();
+            end
+            // After window is first fully populated: (KERNEL_SIZE-1)*IMG_W + KERNEL_SIZE - 1
+            if (pixel_count == (KERNEL_SIZE - 1) * IMG_W + KERNEL_SIZE - 2) begin
+                $display(">>> MILESTONE: Window fully populated (first valid 5x5 patch). Full LB state:");
+                print_line_buffers();
+            end
+            // After each full row completes (except first, already handled)
+            if (pixel_count > IMG_W - 1 && (pixel_count % IMG_W) == IMG_W - 1) begin
+                $display(">>> MILESTONE: Row %0d complete. Full LB state:", pixel_count / IMG_W);
+                print_line_buffers();
+            end
         end
 
         // =====================================================================
@@ -135,6 +181,9 @@ module tb_line_buffer;
         repeat (3) @(posedge clk);
         #1;
         print_window();
+
+        $display(">>> FINAL: Line Buffer SRAM contents after stream ended:");
+        print_line_buffers();
 
         // =====================================================================
         // Finish
@@ -157,6 +206,14 @@ module tb_line_buffer;
         $display("        [ 25 26 27 28 29 ]");
         $display("        [ 33 34 35 36 37 ]");
         $display("   - This is the top-left 5x5 window of the 8x8 image.");
+        $display("");
+        $display(" HOW TO READ LINE BUFFER LOGS:");
+        $display("   - 'LB R/W' shows what each LB reads (feeds into window col 4)");
+        $display("     and what gets written back (overflow from window col 0).");
+        $display("   - 'Waterfall' traces the delay cascade: pixel enters LB1,");
+        $display("     emerges one row later, cascades to LB2, etc.");
+        $display("   - Full LB dumps show all SRAM contents up to img_width.");
+        $display("   - Each LB acts as a FIFO delay of exactly img_width cycles.");
         $display("=============================================================");
 
         #50;
@@ -176,6 +233,51 @@ module tb_line_buffer;
                 end
                 $display(" ]");
             end
+            $display("");
+        end
+    endtask
+
+    // =========================================================================
+    // Task: Print the full SRAM contents of all 4 line buffers
+    // Dumps addresses 0 to img_width-1 for each LB in tabular format
+    // =========================================================================
+    task print_line_buffers;
+        begin
+            $display("  Line Buffer SRAM Contents (addr 0..%0d):", img_width - 1);
+            $write("    Addr |");
+            for (int a = 0; a < img_width; a++) begin
+                $write(" %3d", a);
+            end
+            $display("");
+            $write("    -----|");
+            for (int a = 0; a < img_width; a++) begin
+                $write("----");
+            end
+            $display("");
+            // LB1
+            $write("    LB1  |");
+            for (int a = 0; a < img_width; a++) begin
+                $write(" %3d", dut.r_lb_1[a]);
+            end
+            $display("");
+            // LB2
+            $write("    LB2  |");
+            for (int a = 0; a < img_width; a++) begin
+                $write(" %3d", dut.r_lb_2[a]);
+            end
+            $display("");
+            // LB3
+            $write("    LB3  |");
+            for (int a = 0; a < img_width; a++) begin
+                $write(" %3d", dut.r_lb_3[a]);
+            end
+            $display("");
+            // LB4
+            $write("    LB4  |");
+            for (int a = 0; a < img_width; a++) begin
+                $write(" %3d", dut.r_lb_4[a]);
+            end
+            $display("");
             $display("");
         end
     endtask

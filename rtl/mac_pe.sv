@@ -4,26 +4,29 @@
 // Module: mac_pe (Processing Element)
 // Description: A single node in the Double-Buffered Weight Stationary Systolic Array.
 // ============================================================================
-module mac_pe (
+module mac_pe #(
+    parameter ROW = 0,
+    parameter COL = 0
+)(
     input  logic        clk,
     input  logic        rst_n,
-
+ 
     // Weight Pre-load Interface (flows vertically, Top to Bottom)
     // Uses a shadow register to allow loading while computing
     input  logic        load_weight_en,
     input  logic [7:0]  weight_in,
     output logic [7:0]  weight_out,
-
+ 
     // Wavefront Swapping Interface (flows horizontally with data)
     input  logic        swap_weight_in,
     output logic        swap_weight_out,
-
+ 
     // Data Flow Interface (flows horizontally, Left to Right)
     input  logic        data_en,
     input  logic [7:0]  data_in,
     output logic [7:0]  data_out,
     output logic        data_en_out,
-
+ 
     // Partial Sum Flow Interface (flows vertically, Top to Bottom)
     input  logic        psum_en,
     input  logic [31:0] psum_in,
@@ -85,6 +88,9 @@ module mac_pe (
             r_swap <= swap_weight_in;
             if (swap_weight_in) begin
                 r_weight <= r_weight_shadow;
+                if ($signed(r_weight_shadow) != 0) begin
+                    $display("[PE_DEBUG] at %0t PE(%0d,%0d): swapped weight=%0d", $time, ROW, COL, $signed(r_weight_shadow));
+                end
             end
             
             r_data    <= data_in;
@@ -94,6 +100,10 @@ module mac_pe (
             // STAGE 2: Multiplier (MREG) & Horizontal Propagation
             // -------------------------------------------------------------
             r_mult_res    <= $signed(r_weight) * $signed(r_data);
+            if (r_data_en && COL == 0) begin
+                $display("[PE_MULT_DEBUG] at %0t PE(%0d,0) mult: weight=%0d, data=%0d, product=%0d", 
+                         $time, ROW, $signed(r_weight), $signed(r_data), $signed($signed(r_weight) * $signed(r_data)));
+            end
             
             r_data_out    <= r_data;
             r_data_en_out <= r_data_en;

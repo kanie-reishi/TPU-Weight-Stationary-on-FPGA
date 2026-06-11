@@ -12,3 +12,7 @@ tb/*.out
 tb/hex/*.hex
 tb/hex_conv1/*.hex
 /scripts
+/.agents
+tb/bin/
+tb/logs/
+tb/scripts/

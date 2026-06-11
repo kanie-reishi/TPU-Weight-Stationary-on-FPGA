@@ -314,23 +314,27 @@ module lenet_accelerator #(
     // =========================================================
     // 6. PROCESSING ELEMENT ARRAY (PEA)
     // =========================================================
-    // Route AXI-Lite writes to PEA config if address is in 0x100 - 0x1FF
+    // Route AXI-Lite writes to PEA config if address is in 0x100 - 0x3FF
+    logic slv_reg_wren;
     logic w_pea_cfg_we;
-    // Chỉ kích hoạt khi có xung Write và địa chỉ nằm trong dải 0x100 - 0x1FF
-    assign w_pea_cfg_we = slv_reg_wren && (axi_araddr_reg >= 32'h0000_0100) && (axi_araddr_reg < 32'h0000_0200);
+    
+    assign slv_reg_wren = s_axi_wvalid && s_axi_awvalid;
+    // Chỉ kích hoạt khi có xung Write và địa chỉ nằm trong dải 0x100 - 0x3FF
+    assign w_pea_cfg_we = slv_reg_wren && (s_axi_awaddr >= 32'h0000_0100) && (s_axi_awaddr < 32'h0000_0600);
 
     pea_top #(
         .DATA_WIDTH(8),
         .PSUM_WIDTH(32),
         .ADDR_WIDTH(16) // Khớp với ADDR_WIDTH nội bộ của khối PEA
-    ) u_pea (
+    ) u_pea_top (
         .clk(clk),
         .rst_n(rst_n),
+        
         .ctrl_start(ctrl_mac_start),
         .ctrl_done(ctrl_mac_done),
         
         // Config interface mapped to AXI-Lite
-        .cfg_addr(s_axi_awaddr[7:0]),
+        .cfg_addr(s_axi_awaddr[15:0]),
         .cfg_data(s_axi_wdata),
         .cfg_we(w_pea_cfg_we),
         

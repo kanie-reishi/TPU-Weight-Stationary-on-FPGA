@@ -23,7 +23,7 @@ module psum_buffer #(
     // 1. Khai báo BRAM (1024 x 512-bit = 50KB)
     //=================================================
     localparam DEPTH = 1 << ADDR_WIDTH; // 2^10 = 1024
-    (*ram_style("block") *) logic [DATA_WIDTH-1:0] r_psum_bram [0:DEPTH-1];
+    (*ram_style = "block" *) logic [DATA_WIDTH-1:0] r_psum_bram [0:DEPTH-1];
 
     logic [DATA_WIDTH-1:0] r_psum_bram_data;
 

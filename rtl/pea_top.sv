@@ -13,7 +13,7 @@ module pea_top #(
     output logic ctrl_done,
 
     // Configuration Interface
-    input  logic [7:0]  cfg_addr,
+    input  logic [15:0] cfg_addr,
     input  logic [31:0] cfg_data,
     input  logic        cfg_we,
 
@@ -65,18 +65,18 @@ module pea_top #(
             r_reg_pool_en      <= 1'b0;
         end else if (cfg_we) begin
             case (cfg_addr)
-                8'h00: r_reg_ifm_width    <= cfg_data;
-                8'h04: r_reg_ifm_height   <= cfg_data;
-                8'h08: r_reg_channels_in  <= cfg_data;
-                8'h0C: r_reg_channels_out <= cfg_data;
-                8'h10: r_reg_kernel_size  <= cfg_data;
-                8'h14: r_reg_right_shift  <= cfg_data[4:0];
-                8'h18: r_reg_row_stride   <= cfg_data;
-                8'h1C: r_reg_col_stride   <= cfg_data;
-                8'h20: r_reg_weight_base  <= cfg_data;
-                8'h24: r_reg_bias_base    <= cfg_data;
-                8'h28: r_reg_relu_en      <= cfg_data[0];
-                8'h2C: r_reg_pool_en      <= cfg_data[0];
+                16'h0100: r_reg_ifm_width    <= cfg_data;
+                16'h0104: r_reg_ifm_height   <= cfg_data;
+                16'h0108: r_reg_channels_in  <= cfg_data;
+                16'h010C: r_reg_channels_out <= cfg_data;
+                16'h0110: r_reg_kernel_size  <= cfg_data;
+                16'h0114: r_reg_right_shift  <= cfg_data[4:0];
+                16'h0118: r_reg_row_stride   <= cfg_data;
+                16'h011C: r_reg_col_stride   <= cfg_data;
+                16'h0120: r_reg_weight_base  <= cfg_data;
+                16'h0124: r_reg_bias_base    <= cfg_data;
+                16'h0128: r_reg_relu_en      <= cfg_data[0];
+                16'h012C: r_reg_pool_en      <= cfg_data[0];
             endcase
         end
     end
@@ -92,6 +92,17 @@ module pea_top #(
     // Datapath Wires (Luồng dữ liệu)
     logic [KERNEL_SIZE-1:0][KERNEL_SIZE-1:0][127:0] w_window_data;
     logic w_is_valid_window;
+    logic w_valid_stream_window;
+    logic w_is_valid_window_d1, w_is_valid_window_d2;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            w_is_valid_window_d1 <= 1'b0;
+            w_is_valid_window_d2 <= 1'b0;
+        end else begin
+            w_is_valid_window_d1 <= w_is_valid_window;
+            w_is_valid_window_d2 <= w_is_valid_window_d1;
+        end
+    end
     logic [15:0][7:0]  w_routed_data;
     logic [15:0][7:0]  w_routed_data_delayed; // Pipeline register (Delay 1 clock)
 
@@ -101,6 +112,7 @@ module pea_top #(
 
     // FSM Control Wires (Các dây này sẽ được FSM điều khiển ở phần dưới)
     logic        w_stream_en;
+    logic        w_stream_en_delayed;
     logic [4:0]  w_current_pass_id;
     logic        w_is_first_pass;
     logic        w_psum_re;
@@ -113,9 +125,9 @@ module pea_top #(
     logic [15:0] w_data_en_left;
     logic [15:0] w_psum_en_top;
 
-    // Giải mã địa chỉ Microcode (Giả sử Microcode RAM nằm ở địa chỉ >= 0x80)
+    // Giải mã địa chỉ Microcode (Giả sử Microcode RAM nằm ở địa chỉ >= 0x0200)
     logic        w_microcode_we;
-    assign w_microcode_we = cfg_we && (cfg_addr >= 8'h80);
+    assign w_microcode_we = cfg_we && (cfg_addr >= 16'h0200);
 
     // Post-Processor Signals
     logic [15:0][15:0] r_bias_data;      // 16 bias values, 16-bit each (nạp từ Weight Bank)
@@ -129,11 +141,14 @@ module pea_top #(
     logic [15:0][7:0]  w_pp_ofm_data;    // PP → OFM write data
     logic              r_computation_done;// Cờ báo đã xong toàn bộ tiles
     logic              w_delay_chain_empty; // Delay chain PSUM write đã rỗng
-    assign w_delay_chain_empty = (psum_we_delay_chain == 16'd0);
 
     // =========================================================================
     // 3. PIPELINE ALIGNMENT (ĐỒNG BỘ TRỄ 1 CLOCK)
     // =========================================================================
+    // Delay registers for implicit declarations
+    logic [15:0] w_load_weight_en_delayed;
+    logic [15:0] w_data_en_left_delayed;
+    logic [15:0] w_psum_en_top_delayed;
     // IFM Data phải bị làm trễ 1 clock để đợi BRAM nhả PSUM ra
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -153,34 +168,34 @@ module pea_top #(
     ) u_line_buffer (
         .clk               (clk),
         .rst_n             (rst_n),
-        .stream_en         (w_stream_en),
+        .stream_en         (w_stream_en_delayed),
         .img_width         (r_reg_ifm_width[$clog2(MAX_IFM_WIDTH)-1:0]), // Input động từ Register file
         .pixel_in          (ifm_read_data),
         .window_data_out   (w_window_data)
     );
 
     window_router #(
-        .DATA_WIDTH (128),
-        .KERNEL_SIZE (r_reg_kernel_size)
+        .DATA_WIDTH(128),
+        .KERNEL_SIZE(5)
     ) u_window_router (
         .clk             (clk),
-        .i_cfg_we        (w_microcode_we),
-        .i_cfg_addr      (cfg_addr[4:0]),
+        .i_cfg_we        (cfg_we),
+        .i_cfg_addr      (cfg_addr),
         .i_cfg_data      (cfg_data),
         .i_current_pass_id (w_current_pass_id),
         .window_in       (w_window_data),
-        .routed_data_out (w_routed_data),
+        .routed_data_out (w_routed_data)
     );
 
     pea_systolic_16x16 u_systolic_core (
         .clk                   (clk),
         .rst_n                 (rst_n),
-        .load_weight_en        (w_load_weight_en),
+        .load_weight_en        (w_load_weight_en_delayed),
         .weight_in_top         (wb_read_data),
         .swap_weight_in_global (w_swap_weight),
-        .data_en_left          (w_data_en_left),
+        .data_en_left          (w_data_en_left_delayed),
         .data_in_left          (w_routed_data_delayed),
-        .psum_en_top           (w_psum_en_top),
+        .psum_en_top           (w_psum_en_top_delayed),
         .psum_in_top           (w_psum_to_top),     // From BRAM
         .psum_out_bottom       (w_psum_from_bottom),// To BRAM
         .psum_en_bottom        (w_psum_en_bottom)
@@ -197,6 +212,73 @@ module pea_top #(
         .psum_from_bottom       (w_psum_from_bottom),
         .psum_to_top            (w_psum_to_top)
     );
+
+    // =========================================================================
+    // 5. FSM & Control
+    // =========================================================================
+
+    typedef enum logic [3:0] {
+        ST_IDLE         = 4'd0,
+        ST_LOAD_WEIGHT  = 4'd1,
+        ST_WARM_UP      = 4'd2,
+        ST_STREAM       = 4'd3,
+        ST_FLUSH        = 4'd4,
+        ST_CHECK_PASS   = 4'd5,
+        ST_POST_PROC    = 4'd6,
+        ST_PP_DRAIN     = 4'd7
+    } state_t;
+
+    state_t r_state, w_next_state;
+
+    // Hardware Counters
+    logic [6:0]  r_cout_tile_cnt; // Đếm Cout Tiles (C1:1, C5:8)
+    logic [4:0]  r_pass_id_cnt;   // Đếm số Pass trong 1 Tile (C1:2, C5:25)
+    logic [4:0]  r_weight_cnt;    // Đếm 16 nhịp nạp weight
+    logic [31:0] r_warmup_cnt;    // Đếm nhịp fill Line Buffer
+    logic [31:0] r_stream_cnt;    // Đếm tổng số pixel IFM đã đọc trong 1 pass
+    logic [15:0] r_col_cnt;       // Đếm toạ độ X của pixel đang chui vào Line Buffer
+    logic [6:0]  r_flush_cnt;     // Đếm 48 nhịp flush pipeline PEA
+
+    // Các bộ đếm quản lý Địa chỉ bộ nhớ PSUM BRAM
+    logic [PSUM_ADDR_W-1:0] r_psum_rd_ptr; // Con trỏ đọc psum chuẩn (0 -> out_w*out_h-1)
+
+    // AUTOMATIC THRESHOLD CALCULATIONS
+    logic [4:0]  w_num_passes;
+    logic [6:0]  w_max_cout_tiles;
+    logic [31:0] w_warmup_threshold;
+    logic [31:0] w_total_ifm_pixels;
+    logic [PSUM_ADDR_W-1:0] w_max_output_pixels;
+
+    always_comb begin
+        // Tính số passes = ceil(Cin * 25 / 16) -> Dùng dịch bit, không dùng chia
+        w_num_passes     = ((r_reg_channels_in * 25) + 15) >> 4;
+        
+        // Tính số Cout Tiles = ceil(Cout / 16)
+        w_max_cout_tiles = (r_reg_channels_out + 15) >> 4;
+        
+        // Ngung Warm-up = (5-1)*Width + 1 = 4*Width + 1
+        w_warmup_threshold = (r_reg_kernel_size - 1) * r_reg_ifm_width + r_reg_kernel_size;
+        
+        // Tổng số pixel IFM của 1 ảnh = Width * Height
+        w_total_ifm_pixels = r_reg_ifm_width * r_reg_ifm_height;
+        
+        // Tổng số lượng điểm ảnh kết quả (OFM) = out_width * out_height
+        w_max_output_pixels = (r_reg_ifm_width - 4) * (r_reg_ifm_height - 4); 
+
+        // Cửa sổ hợp lệ
+        w_is_valid_window = (r_col_cnt >= r_reg_kernel_size - 1);
+
+        // Tín hiệu combinational: cửa sổ hợp lệ trong trạng thái STREAM
+        w_valid_stream_window = (r_state == ST_STREAM) && w_is_valid_window_d2;
+    end
+
+    // DEBUG LOG
+    always_ff @(posedge clk) begin
+        if (ctrl_start) begin
+            $display("[PEA_TOP_DEBUG] Starting MAC: IFM_W=%0d, IFM_H=%0d, C_IN=%0d, C_OUT=%0d, w_max_output_pixels=%0d, w_num_passes=%0d, w_max_cout_tiles=%0d",
+                r_reg_ifm_width, r_reg_ifm_height, r_reg_channels_in, r_reg_channels_out, w_max_output_pixels, w_num_passes, w_max_cout_tiles);
+        end
+    end
 
     // =========================================================================
     // 4b. OFM POST-PROCESSOR (Bias + Right Shift + ReLU)
@@ -227,62 +309,6 @@ module pea_top #(
     assign ofm_we         = w_pp_ofm_we;
     assign ofm_write_addr = w_pp_ofm_addr;
     assign ofm_write_data = w_pp_ofm_data;
-
-    // =========================================================================
-    // 5. FSM & Control
-    // =========================================================================
-
-    typedef enum logic [2:0] {
-        ST_IDLE         = 3'd0,
-        ST_LOAD_WEIGHT  = 3'd1,
-        ST_WARM_UP      = 3'd2,
-        ST_STREAM       = 3'd3,
-        ST_CHECK_PASS   = 3'd4,
-        ST_POST_PROC    = 3'd5,
-        ST_PP_DRAIN     = 3'd6
-    } state_t;
-
-    state_t r_state, w_next_state;
-
-    // Hardware Counters
-    logic [6:0]  r_cout_tile_cnt; // Đếm Cout Tiles (C1:1, C5:8)
-    logic [4:0]  r_pass_id_cnt;   // Đếm số Pass trong 1 Tile (C1:2, C5:25)
-    logic [4:0]  r_weight_cnt;    // Đếm 16 nhịp nạp weight
-    logic [31:0] r_warmup_cnt;    // Đếm nhịp fill Line Buffer
-    logic [31:0] r_stream_cnt;    // Đếm tổng số pixel IFM đã đọc trong 1 pass
-    logic [15:0] r_col_cnt;       // Đếm toạ độ X của pixel đang chui vào Line Buffer
-
-    // Các bộ đếm quản lý Địa chỉ bộ nhớ PSUM BRAM
-    logic [PSUM_ADDR_W-1:0] r_psum_rd_ptr; // Con trỏ đọc psum chuẩn (0 -> out_w*out_h-1)
-    logic [PSUM_ADDR_W-1:0] r_psum_wr_ptr; // Con trỏ ghi psum (Phải trễ hơn rd_ptr 16 nhịp)
-
-    // AUTOMATIC THRESHOLD CALCULATIONS
-    logic [4:0]  w_num_passes;
-    logic [6:0]  w_max_cout_tiles;
-    logic [31:0] w_warmup_threshold;
-    logic [31:0] w_total_ifm_pixels;
-    logic [PSUM_ADDR_W-1:0] w_max_output_pixels;
-
-    always_comb begin
-        // Tính số passes = ceil(Cin * 25 / 16) -> Dùng dịch bit, không dùng chia
-        w_num_passes     = ((r_reg_channels_in * 25) + 15) >> 4;
-        
-        // Tính số Cout Tiles = ceil(Cout / 16)
-        w_max_cout_tiles = (r_reg_channels_out + 15) >> 4;
-        
-        // Ngưỡng Warm-up = (5-1)*Width + (5-1) = 4*Width + 4
-        w_warmup_threshold = (r_reg_ifm_width << 2) + 4;
-        
-        // Tổng số pixel IFM của 1 ảnh = Width * Height
-        w_total_ifm_pixels = r_reg_ifm_width * r_reg_ifm_height; // Phép nhân kích thước phẳng (chấp nhận được)
-        
-        // Tổng số lượng điểm ảnh kết quả (OFM) = out_width * out_height
-        // Tạm thời lấy bằng tổng số pixel (Bạn có thể trừ đi border nếu ko dùng padding ở sw)
-        w_max_output_pixels = (r_reg_ifm_width - 4) * (r_reg_ifm_height - 4); 
-
-        // Cửa sổ hợp lệ
-        w_is_valid_window = (r_col_cnt >= r_reg_kernel_size - 1);
-    end
 
     // =========================================================================
     // 7. STATE TRANSITION LOGIC (Sequential Block)
@@ -316,8 +342,15 @@ module pea_top #(
             end
             
             ST_STREAM: begin
-                // Stream cho đến khi cạn bộ nhớ ảnh IFM SRAM của pass đó
-                if (r_stream_cnt == w_total_ifm_pixels - 1) w_next_state = ST_CHECK_PASS;
+                // Stream nốt số pixel còn lại sau khi warmup
+                // Thoát ST_STREAM ngay khi valid window cuối cùng được nạp vào PEA
+                if (w_valid_stream_window && (r_psum_rd_ptr == w_max_output_pixels - 1)) 
+                    w_next_state = ST_FLUSH;
+            end
+
+            ST_FLUSH: begin
+                // Đợi Pipeline PE Array chạy nốt những dữ liệu cuối cùng (delay chain = 64)
+                if (r_flush_cnt == 64) w_next_state = ST_CHECK_PASS;
             end
 
             ST_CHECK_PASS: begin
@@ -370,6 +403,7 @@ module pea_top #(
                     r_stream_cnt    <= '0;
                     r_psum_rd_ptr   <= '0;
                     r_pp_bias_cnt   <= '0;
+                    r_flush_cnt     <= '0;
                 end
                 ST_LOAD_WEIGHT: begin
                     r_weight_cnt <= r_weight_cnt + 1;
@@ -378,6 +412,7 @@ module pea_top #(
                     r_stream_cnt  <= '0;
                     r_psum_rd_ptr <= '0;
                     r_col_cnt <= '0;
+                    r_flush_cnt <= '0;
                 end
 
                 ST_WARM_UP: begin
@@ -398,9 +433,10 @@ module pea_top #(
                     else 
                         r_col_cnt <= r_col_cnt + 1;
                         
-                    if (w_is_valid_window && (r_psum_rd_ptr < w_max_output_pixels - 1)) begin
-                        r_psum_rd_ptr <= r_psum_rd_ptr + 1;
-                    end
+                end
+
+                ST_FLUSH: begin
+                    r_flush_cnt <= r_flush_cnt + 1;
                 end
 
                 ST_CHECK_PASS: begin
@@ -425,13 +461,20 @@ module pea_top #(
                     end
                 end
             endcase
+            
+            if (w_valid_stream_window && (r_psum_rd_ptr < w_max_output_pixels - 1)) begin
+                r_psum_rd_ptr <= r_psum_rd_ptr + 1;
+            end
         end
     end
     // =========================================================================
-    // 10. PSUM WRITE POINTER DELAY CHAIN (16-CYCLE LATENCY ALIGNMENT)
+    // 10. PSUM WRITE DELAY CHAIN (Đồng bộ với Latency của PEA)
     // =========================================================================
-    logic [15:0][PSUM_ADDR_W-1:0] psum_addr_delay_chain;
-    logic [15:0]                 psum_we_delay_chain;
+    // Đỗ trễ từ data_en_left đến khi psum_out_bottom valid là 63 nhịp (bao gồm Skew + PE + Deskew) + 1 nhịp.
+    logic [63:0][PSUM_ADDR_W-1:0] psum_addr_delay_chain;
+    logic [63:0]                 psum_we_delay_chain;
+
+    assign w_delay_chain_empty = (psum_we_delay_chain == '0);
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -439,21 +482,34 @@ module pea_top #(
             psum_we_delay_chain   <= '0;
         end else begin
             // Đẩy con trỏ đọc hiện tại và lệnh cho phép ghi (we) vào đầu ống
-            // Lệnh ghi thực sự (w_psum_we) chỉ xảy ra trong trạng thái STREAM và cửa sổ đó hợp lệ
+            // Lệnh ghi thực sự (w_psum_we) chỉ xảy ra trong trạng thái STREAM và cửa sổ đã hợp lệ
             psum_addr_delay_chain[0] <= r_psum_rd_ptr;
-            psum_we_delay_chain[0]   <= (r_state == ST_STREAM) && w_is_valid_window;
+            psum_we_delay_chain[0]   <= w_valid_stream_window;
             
             // Dịch chuyển đường ống trễ
-            for (int i = 1; i < 16; i++) begin
+            for (int i = 1; i < 64; i++) begin
                 psum_addr_delay_chain[i] <= psum_addr_delay_chain[i-1];
                 psum_we_delay_chain[i]   <= psum_we_delay_chain[i-1];
             end
         end
     end
 
-    // Hứng dữ liệu rớt ra ở cuối ống trễ 16 nhịp gán vào cổng ghi của BRAM
-    assign w_psum_write_addr = psum_addr_delay_chain[15];
-    assign w_psum_we         = psum_we_delay_chain[15];
+    // Hàng dữ liệu rút ra ở cuối ống trễ gán vào cổng ghi của BRAM
+    assign w_psum_write_addr = psum_addr_delay_chain[63];
+    assign w_psum_we         = psum_we_delay_chain[63];
+
+    // DEBUG LOGS
+    logic [31:0] cycle_cnt = 0;
+    always_ff @(posedge clk) cycle_cnt <= cycle_cnt + 1;
+
+    always_ff @(posedge clk) begin
+        if (w_psum_we && w_psum_write_addr == 0) begin
+            $display("[PEA_TOP_DEBUG] w_psum_we=1 for addr=0:");
+            for (int i = 0; i < 16; i++) begin
+                $display("  chan %0d: val=%0d | en=%0b", i, $signed(w_psum_from_bottom[i]), w_psum_en_bottom[i]);
+            end
+        end
+    end
 
     // =========================================================================
     // 11. DRIVING CONTROL WIRES TO DATAPATH (Driving the Wires from Section 2)
@@ -464,21 +520,36 @@ module pea_top #(
     assign w_is_first_pass   = (r_pass_id_cnt == 5'd0) && (r_state == ST_WARM_UP || r_state == ST_STREAM);
 
     // Mux port đọc PSUM buffer: streaming hoặc post-processor
-    assign w_psum_re         = (r_state == ST_STREAM) || w_pp_psum_re;
+    assign w_psum_re         = w_valid_stream_window || w_pp_psum_re;
     assign w_psum_read_addr  = w_pp_psum_re ? w_pp_psum_rd_addr : r_psum_rd_ptr;
 
     // Các tín hiệu kích hoạt lõi Systolic Array
     assign w_load_weight_en  = (r_state == ST_LOAD_WEIGHT) ? 16'hFFFF : 16'h0000;
-    assign w_swap_weight     = (r_state == ST_LOAD_WEIGHT) && (r_weight_cnt == 5'd15);
+    assign w_swap_weight     = (r_state == ST_WARM_UP) && (r_warmup_cnt == 32'd1);
     
-    assign w_data_en_left    = (r_state == ST_STREAM) ? 16'hFFFF : 16'h0000;
-    assign w_psum_en_top     = (r_state == ST_STREAM) ? 16'hFFFF : 16'h0000;
+    assign w_data_en_left    = w_valid_stream_window ? 16'hFFFF : 16'h0000;
+    assign w_psum_en_top     = w_valid_stream_window ? 16'hFFFF : 16'h0000;
+
+    
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            w_stream_en_delayed    <= '0;
+            w_data_en_left_delayed <= '0;
+            w_psum_en_top_delayed  <= '0;
+            w_load_weight_en_delayed <= '0;
+        end else begin
+            w_stream_en_delayed    <= w_stream_en;
+            w_data_en_left_delayed <= w_data_en_left;
+            w_psum_en_top_delayed  <= w_psum_en_top;
+            w_load_weight_en_delayed <= w_load_weight_en;
+        end
+    end
 
     // Giao diện SRAM Bộ nhớ ngoài (Rewind tự động bằng bộ đếm r_stream_cnt và r_warmup_cnt)
     assign ifm_re            = w_stream_en;
     // Đọc tuần tự từ địa chỉ gốc của ảnh, khi chuyển Pass bộ đếm tự reset về 0 làm con trỏ tự Rewind!
-    assign ifm_read_addr     = (r_state == ST_WARM_UP) ? r_warmup_cnt[ADDR_WIDTH-1:0] : 
-                               (r_state == ST_STREAM)  ? (w_warmup_threshold + r_stream_cnt)[ADDR_WIDTH-1:0] : '0;
+    assign ifm_read_addr     = (r_state == ST_WARM_UP) ? ADDR_WIDTH'(r_warmup_cnt) : 
+                               (r_state == ST_STREAM)  ? ADDR_WIDTH'(w_warmup_threshold + r_stream_cnt) : '0;
 
     // Weight SRAM: Mux giữa nạp weight (LOAD_WEIGHT) và đọc bias (POST_PROC)
     assign wb_re             = (r_state == ST_LOAD_WEIGHT) ||
@@ -503,18 +574,22 @@ module pea_top #(
             if (r_state == ST_POST_PROC && w_delay_chain_empty) begin
                 case (r_pp_bias_cnt)
                     2'd1: begin
-                        // BRAM trả dữ liệu từ lệnh đọc ở cnt=0 → lưu bias[0..7]
-                        for (int i = 0; i < 8; i++) begin
-                            r_bias_data[i] <= {wb_read_data[2*i+1], wb_read_data[2*i]};
+                        // BRAM trả dữ liệu từ lệnh đọc ở cnt=0 → lưu phần thấp của bias cho cả 16 kênh
+                        for (int i = 0; i < 16; i++) begin
+                            r_bias_data[i][7:0] <= wb_read_data[i];
                         end
                     end
                     2'd2: begin
-                        // BRAM trả dữ liệu từ lệnh đọc ở cnt=1 → lưu bias[8..15]
-                        for (int i = 0; i < 8; i++) begin
-                            r_bias_data[i+8] <= {wb_read_data[2*i+1], wb_read_data[2*i]};
+                        // BRAM trả dữ liệu từ lệnh đọc ở cnt=1 → lưu phần cao của bias cho cả 16 kênh
+                        for (int i = 0; i < 16; i++) begin
+                            r_bias_data[i][15:8] <= wb_read_data[i];
                         end
                         // Kích hoạt post-processor pipeline
                         r_pp_start <= 1'b1;
+                        $display("[PEA_TOP] Loaded bias_data:");
+                        for (int i = 0; i < 16; i++) begin
+                            $display("  chan %0d: %0d", i, $signed({wb_read_data[i], r_bias_data[i][7:0]}));
+                        end
                     end
                 endcase
             end

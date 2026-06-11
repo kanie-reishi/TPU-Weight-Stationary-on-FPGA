@@ -163,6 +163,12 @@ module axi_full_dma_engine #(
                     end
                 end
 
+                WRITE_AW: begin
+                    if (m_axi_awvalid && m_axi_awready) begin
+                        sram_addr_o <= sram_addr_o + 1; // PREFETCH SRAM address to hide 1-cycle latency!
+                    end
+                end
+
                 WRITE_W: begin
                     if (m_axi_wvalid && m_axi_wready) begin
                         sram_addr_o <= sram_addr_o + 1;

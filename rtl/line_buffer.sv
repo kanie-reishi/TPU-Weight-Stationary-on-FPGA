@@ -33,6 +33,15 @@ module line_buffer #(
     (* ram_style = "distributed" *) logic [DATA_WIDTH-1:0] r_lb_2[LB_DEPTH-1:0];
     (* ram_style = "distributed" *) logic [DATA_WIDTH-1:0] r_lb_3[LB_DEPTH-1:0];
     (* ram_style = "distributed" *) logic [DATA_WIDTH-1:0] r_lb_4[LB_DEPTH-1:0];
+
+    initial begin
+        for (int i = 0; i < LB_DEPTH; i++) begin
+            r_lb_1[i] = '0;
+            r_lb_2[i] = '0;
+            r_lb_3[i] = '0;
+            r_lb_4[i] = '0;
+        end
+    end
     
     // Khai báo 25 Flip-Flops cho Window Array
     logic [DATA_WIDTH-1:0] r_window_arr[KERNEL_SIZE-1:0][KERNEL_SIZE-1:0];
@@ -74,18 +83,24 @@ module line_buffer #(
                 end
             end
 
-            // Bước 2: Cột ngoài cùng bên Phải hứng dữ liệu mới
-            r_window_arr[0][4] <= pixel_in;        // Hàng 0 lấy từ SRAM ngoài
-            r_window_arr[1][4] <= r_lb_1[r_col_ptr]; // Hàng 1 lấy từ RAM Delay 1
-            r_window_arr[2][4] <= r_lb_2[r_col_ptr]; // Hàng 2 lấy từ RAM Delay 2
-            r_window_arr[3][4] <= r_lb_3[r_col_ptr]; // Hàng 3 lấy từ RAM Delay 3
-            r_window_arr[4][4] <= r_lb_4[r_col_ptr]; // Hàng 4 lấy từ RAM Delay 4
+            // Hàng 0: Lấy từ pixel_in
+            r_window_arr[0][4]  <= pixel_in;
+            r_lb_1[r_col_ptr] <= pixel_in;          // Đổ THẲNG xuống hầm ngầm 0
 
-            // Bước 3: Dữ liệu tràn ra ở cột Trái rơ xuống Line buffers
-            r_lb_1[r_col_ptr] <= r_window_arr[0][0];  // Hàng 1 lấy từ RAM Delay 1
-            r_lb_2[r_col_ptr] <= r_window_arr[1][0];  // Hàng 2 lấy từ RAM Delay 2
-            r_lb_3[r_col_ptr] <= r_window_arr[2][0];  // Hàng 3 lấy từ RAM Delay 3
-            r_lb_4[r_col_ptr] <= r_window_arr[3][0];  // Hàng 4 lấy từ RAM Delay 4
+            // Hàng 1: Lấy từ hầm ngầm 0 trồi lên
+            r_window_arr[1][4]  <= r_lb_1[r_col_ptr];
+            r_lb_2[r_col_ptr] <= r_lb_1[r_col_ptr]; // Đổ TIẾP xuống hầm ngầm 1
+
+            // Hàng 2: Lấy từ hầm ngầm 1 trồi lên
+            r_window_arr[2][4]  <= r_lb_2[r_col_ptr];
+            r_lb_3[r_col_ptr] <= r_lb_2[r_col_ptr]; // Đổ TIẾP xuống hầm ngầm 2
+
+            // Hàng 3: Lấy từ hầm ngầm 2 trồi lên
+            r_window_arr[3][4]  <= r_lb_3[r_col_ptr];
+            r_lb_4[r_col_ptr] <= r_lb_3[r_col_ptr]; // Đổ TIẾP xuống hầm ngầm 3
+
+            // Hàng 4: Lấy từ hầm ngầm 3 trồi lên (Hàng cuối cùng không có RAM ngầm bên dưới)
+            r_window_arr[4][4]  <= r_lb_4[r_col_ptr];
         end
     end
 

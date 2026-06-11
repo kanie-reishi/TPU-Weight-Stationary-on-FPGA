@@ -117,6 +117,20 @@ module tb_conv5();
         end
     endtask
 
+    // Microcode will be loaded from file
+    logic [31:0] mc_mem [0 : 25 * 5 - 1]; // 5 words per pass (125 words total)
+
+    task upload_microcode;
+        begin
+            $readmemh("microcode.hex", mc_mem);
+            for (int p = 0; p < 25; p++) begin
+                for (int w = 0; w < 5; w++) begin
+                    axi_lite_write(32'h0200 + p * 32 + w * 4, mc_mem[p*5 + w]);
+                end
+            end
+        end
+    endtask
+
     // ==========================================
     // DATA SCOREBOARD (Mock DDR 128-bit)
     // ==========================================
@@ -127,15 +141,15 @@ module tb_conv5();
     // =========================================================================
     logic [127:0] hex_ifm    [0:1023];
     logic [127:0] hex_weight [0:4095];
-    logic [31:0]  hex_bias   [0:127];
-    logic [127:0] hex_ofm    [0:1023];
+    logic [15:0]  hex_bias   [0:127];  // 128 lines of 16-bit readable bias values
+    logic [7:0]   hex_ofm    [0:127];  // 128 lines of 8-bit readable expected OFM
 
     task automatic load_hex_data();
         int pass_base;
-        $readmemh("hex/ifm.hex", hex_ifm);
-        $readmemh("hex/weight.hex", hex_weight);
-        $readmemh("hex/bias.hex", hex_bias);
-        $readmemh("hex/expected_ofm.hex", hex_ofm);
+        $readmemh("ifm.hex", hex_ifm);
+        $readmemh("weight.hex", hex_weight);
+        $readmemh("bias.hex", hex_bias);
+        $readmemh("expected_ofm.hex", hex_ofm);
 
         // Load IFM into DDR at word 4096 (0x10000 = 65536 bytes)
         for (int i=0; i<25; i++) mock_ddr[4096 + i] = hex_ifm[i];
@@ -148,9 +162,18 @@ module tb_conv5();
             for (int w=0; w<400; w++) begin
                 mock_ddr[pass_base + w] = hex_weight[p * 400 + w];
             end
-            // 2. Copy 16 words of bias (padded to 128-bit)
-            for (int b=0; b<16; b++) begin
-                mock_ddr[pass_base + 400 + b] = {96'd0, hex_bias[p * 16 + b]};
+            // 2. Pack and copy 16-bit bias values into 2 words of 128-bit
+            // Word 0 (pass_base + 400) gets lower 8 bits of all 16 biases
+            // Word 1 (pass_base + 401) gets upper 8 bits of all 16 biases
+            mock_ddr[pass_base + 400] = '0;
+            mock_ddr[pass_base + 401] = '0;
+            for (int ch=0; ch<16; ch++) begin
+                mock_ddr[pass_base + 400][ch*8 +: 8] = hex_bias[p * 16 + ch][7:0];
+                mock_ddr[pass_base + 401][ch*8 +: 8] = hex_bias[p * 16 + ch][15:8];
+            end
+            // 3. Pad remaining 14 words with 0
+            for (int b=2; b<16; b++) begin
+                mock_ddr[pass_base + 400 + b] = '0;
             end
         end
     endtask
@@ -257,12 +280,16 @@ module tb_conv5();
         $display("[+] Configuring PEA...");
         axi_lite_write(32'h0000_0100, 5);  // width
         axi_lite_write(32'h0000_0104, 5);  // height
-        axi_lite_write(32'h0000_0108, 1);  // cin
+        axi_lite_write(32'h0000_0108, 16); // cin
         axi_lite_write(32'h0000_010C, 16); // cout
         axi_lite_write(32'h0000_0110, 5);  // kernel size
         axi_lite_write(32'h0000_0114, 10); // right shift (10 for Conv5 quantized data)
         axi_lite_write(32'h0000_0118, 5);  // row stride
         axi_lite_write(32'h0000_011C, 1);  // col stride
+        axi_lite_write(32'h0000_0128, 1);  // relu enable (1 = enabled)
+
+        $display("[+] Uploading Window Router Microcode...");
+        upload_microcode();
 
         // Loop over 8 passes
         for (int p=0; p<8; p++) begin
@@ -310,8 +337,14 @@ module tb_conv5();
             $display("[+] Verifying OFM Results from Mock DDR...");
             for (int p=0; p<8; p++) begin
                 // DDR word index: 0x30000 / 16 = 12288
-                if (mock_ddr[12288 + p] !== hex_ofm[p]) begin
-                    $display("   [FAIL] Pass %0d: Expected %H, Got %H", p, hex_ofm[p], mock_ddr[12288 + p]);
+                // Build expected 128-bit word from 16 byte elements
+                logic [127:0] expected_word;
+                for (int ch=0; ch<16; ch++) begin
+                    expected_word[ch*8 +: 8] = hex_ofm[p * 16 + ch];
+                end
+
+                if (mock_ddr[12288 + p] !== expected_word) begin
+                    $display("   [FAIL] Pass %0d: Expected %H, Got %H", p, expected_word, mock_ddr[12288 + p]);
                     errors++;
                 end else begin
                     $display("   [PASS] Pass %0d output matches golden data!", p);

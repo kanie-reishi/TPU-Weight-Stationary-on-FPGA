@@ -16,7 +16,18 @@ module tb_lenet_accelerator();
     // PARAMETERS & SIGNALS
     // =========================================================
     localparam AXI_AWIDTH = 40;
-    localparam AXI_DWIDTH = 64;
+    localparam AXI_DWIDTH = 128; // Changed to match SRAM_DWIDTH (128)
+
+    // CONV3 Settings
+    localparam IFM_W = 14;
+    localparam IFM_H = 14;
+    localparam K_SIZE = 5;
+    localparam OUT_W = IFM_W - K_SIZE + 1;
+    localparam OUT_H = IFM_H - K_SIZE + 1;
+    localparam C_IN = 16;
+    localparam C_OUT = 16;
+    localparam COUT_TILES = (C_OUT + 15) / 16;
+    localparam NUM_PASSES = (C_IN * K_SIZE * K_SIZE + 15) / 16;
 
     logic clk;
     logic rst_n;
@@ -103,30 +114,39 @@ module tb_lenet_accelerator();
     // =========================================================
     always #5 clk = ~clk; // 100MHz
 
+    // Watchdog timer to prevent infinite loops/simulation hangs
+    initial begin
+        #100000; // 100us timeout
+        $display("[WATCHDOG] Simulation timeout reached! Force terminating...");
+        $finish;
+    end
+
     // =========================================================
     // AXI-LITE BFM (Master)
     // =========================================================
     task axi_lite_write(input logic [31:0] addr, input logic [31:0] data);
         begin
             @(posedge clk);
-            s_axi_awaddr  = addr;
-            s_axi_awvalid = 1'b1;
-            s_axi_wdata   = data;
-            s_axi_wvalid  = 1'b1;
-            s_axi_bready  = 1'b1;
+            s_axi_awaddr  <= addr;
+            s_axi_awvalid <= 1'b1;
+            s_axi_wdata   <= data;
+            s_axi_wvalid  <= 1'b1;
+            s_axi_bready  <= 1'b1;
 
             // Chờ Ready từ Slave
-            wait(s_axi_awready && s_axi_wready);
-            @(posedge clk);
-            s_axi_awaddr  = '0;
-            s_axi_awvalid = 1'b0;
-            s_axi_wdata   = '0;
-            s_axi_wvalid  = 1'b0;
+            do begin
+                @(posedge clk);
+            end while (!(s_axi_awready && s_axi_wready));
+            
+            s_axi_awvalid <= 1'b0;
+            s_axi_wvalid  <= 1'b0;
 
             // Chờ BVALID trả về
-            wait(s_axi_bvalid);
-            @(posedge clk);
-            s_axi_bready  = 1'b0;
+            while (!s_axi_bvalid) begin
+                @(posedge clk);
+            end
+            
+            s_axi_bready  <= 1'b0;
         end
     endtask
 
@@ -149,6 +169,27 @@ module tb_lenet_accelerator();
         end
     endtask
 
+    task send_instruction(input logic [63:0] inst);
+        begin
+            axi_lite_write(32'h0000_0004, inst[63:32]);
+            axi_lite_write(32'h0000_0000, inst[31:0]);
+        end
+    endtask
+
+    // Microcode will be loaded from file
+    logic [31:0] mc_mem [0 : NUM_PASSES * 5 - 1]; // 5 words per pass
+
+    task upload_microcode;
+        begin
+            $readmemh("microcode.hex", mc_mem);
+            for (int p = 0; p < NUM_PASSES; p++) begin
+                for (int w = 0; w < 5; w++) begin
+                    axi_lite_write(32'h0200 + p * 32 + w * 4, mc_mem[p*5 + w]);
+                end
+            end
+        end
+    endtask
+
     // =========================================================
     // AXI-FULL BFM (DDR Memory Mock - Slave)
     // =========================================================
@@ -158,9 +199,6 @@ module tb_lenet_accelerator();
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             m_axi_arready <= 1'b0;
-            m_axi_rvalid  <= 1'b0;
-            m_axi_rlast   <= 1'b0;
-            m_axi_rdata   <= '0;
         end else begin
             // Chấp nhận yêu cầu đọc
             if (m_axi_arvalid && !m_axi_arready) begin
@@ -178,84 +216,93 @@ module tb_lenet_accelerator();
 
     // Read Data Thread
     initial begin
-        m_axi_rvalid = 1'b0;
-        m_axi_rlast  = 1'b0;
-        m_axi_rdata  = '0;
+        m_axi_rvalid <= 1'b0;
+        m_axi_rlast  <= 1'b0;
+        m_axi_rdata  <= '0;
         forever begin
             @(posedge clk);
             if (m_axi_arvalid && m_axi_arready) begin
-                logic [AXI_AWIDTH-1:0] r_addr = m_axi_araddr;
-                int r_len = m_axi_arlen;
+                logic [AXI_AWIDTH-1:0] r_addr;
+                int r_len;
+                r_addr = m_axi_araddr;
+                r_len = m_axi_arlen;
                 
                 // Mất 5 nhịp clock để truy cập DDR
                 repeat(5) @(posedge clk);
 
                 for (int i = 0; i <= r_len; i++) begin
-                    m_axi_rvalid = 1'b1;
-                    m_axi_rlast  = (i == r_len);
+                    logic [127:0] temp_data;
+                    temp_data = '0;
                     
-                    // Ghép 8 bytes thành 1 từ 64-bit
-                    for (int b = 0; b < 8; b++) begin
-                        m_axi_rdata[b*8 +: 8] = ddr_mem.exists(r_addr + b) ? ddr_mem[r_addr + b] : 8'h00;
+                    // Ghép 16 bytes thành 1 từ 128-bit
+                    for (int b = 0; b < 16; b++) begin
+                        temp_data[b*8 +: 8] = ddr_mem.exists(r_addr + b) ? ddr_mem[r_addr + b] : 8'h00;
                     end
+                    
+                    m_axi_rdata  <= temp_data;
+                    m_axi_rvalid <= 1'b1;
+                    m_axi_rlast  <= (i == r_len);
                     
                     wait(m_axi_rready); // Đợi Master sẵn sàng nhận
                     @(posedge clk);
-                    r_addr = r_addr + 8; // Mặc định bus 64-bit = 8 bytes
+                    r_addr = r_addr + 16; // Mặc định bus 128-bit = 16 bytes
                 end
                 
-                m_axi_rvalid = 1'b0;
-                m_axi_rlast  = 1'b0;
+                m_axi_rvalid <= 1'b0;
+                m_axi_rlast  <= 1'b0;
             end
         end
     end
 
     // 2. Write Channel
     initial begin
-        m_axi_awready = 1'b0;
-        m_axi_wready  = 1'b0;
-        m_axi_bvalid  = 1'b0;
-        m_axi_bresp   = 2'b00;
+        m_axi_awready <= 1'b0;
+        m_axi_wready  <= 1'b0;
+        m_axi_bvalid  <= 1'b0;
+        m_axi_bresp   <= 2'b00;
 
         forever begin
             @(posedge clk);
             // Chấp nhận Address
             if (m_axi_awvalid && !m_axi_awready) begin
-                m_axi_awready = 1'b1;
+                m_axi_awready <= 1'b1;
                 
                 // Thu thập Data
                 fork
                     begin
-                        logic [AXI_AWIDTH-1:0] w_addr = m_axi_awaddr;
-                        int w_len = m_axi_awlen;
-                        int beats = 0;
+                        logic [AXI_AWIDTH-1:0] w_addr;
+                        int w_len;
+                        int beats;
+                        w_addr = m_axi_awaddr;
+                        w_len = m_axi_awlen;
+                        beats = 0;
 
-                        m_axi_wready = 1'b1; // Sẵn sàng nhận data
+                        m_axi_wready <= 1'b1; // Sẵn sàng nhận data
                         
                         while (beats <= w_len) begin
                             @(posedge clk);
                             if (m_axi_wvalid && m_axi_wready) begin
-                                // Ghi 8 bytes vào DDR Mock
-                                for (int b = 0; b < 8; b++) begin
+                                // Ghi 16 bytes vào DDR Mock
+                                for (int b = 0; b < 16; b++) begin
                                     ddr_mem[w_addr + b] = m_axi_wdata[b*8 +: 8];
                                 end
-                                w_addr = w_addr + 8;
+                                w_addr = w_addr + 16;
                                 beats++;
                                 if (m_axi_wlast) break;
                             end
                         end
-                        m_axi_wready = 1'b0;
+                        m_axi_wready <= 1'b0;
                         
                         // Phản hồi BVALID
                         @(posedge clk);
-                        m_axi_bvalid = 1'b1;
+                        m_axi_bvalid <= 1'b1;
                         wait(m_axi_bready);
                         @(posedge clk);
-                        m_axi_bvalid = 1'b0;
+                        m_axi_bvalid <= 1'b0;
                     end
                 join_none
             end else begin
-                m_axi_awready = 1'b0;
+                m_axi_awready <= 1'b0;
             end
         end
     end
@@ -270,88 +317,66 @@ module tb_lenet_accelerator();
     localparam OFM_ADDR  = 40'h3000_0000; // Kết quả trả về
     
     // Kích thước (Fix theo phần cứng K=5 của PEA)
-    localparam IFM_W = 10;
-    localparam IFM_H = 10;
-    localparam C_IN  = 1;
-    localparam C_OUT = 16;
-    localparam K_SIZE = 5;
-    localparam OUT_W = IFM_W - K_SIZE + 1; // 6
-    localparam OUT_H = IFM_H - K_SIZE + 1; // 6
-    localparam RIGHT_SHIFT = 2;
+    // Các hằng số IFM_W, IFM_H, C_IN, C_OUT, v.v. đã được dời lên đầu file.
+    localparam RIGHT_SHIFT = 8;
     localparam RELU_EN = 1;
 
-    // Bộ nhớ Reference
-    logic signed [7:0] ref_ifm [IFM_H][IFM_W][C_IN];
-    logic signed [7:0] ref_wgt [C_OUT][C_IN][K_SIZE][K_SIZE];
-    logic signed [15:0] ref_bias [C_OUT];
-    logic signed [7:0] ref_ofm [OUT_H][OUT_W][C_OUT];
-
+    // Arrays loaded from HEX files
+    logic [7:0] ifm_mem_file [0 : IFM_H * IFM_W * 16 - 1]; // Size includes padding
+    logic [7:0] wgt_mem_file [0 : ((C_OUT+15)/16) * (((C_IN*K_SIZE*K_SIZE+15)/16)*16) * 16 - 1];
+    logic [7:0] bias_mem_file [0 : ((C_OUT+15)/16)*32 - 1];
+    logic [63:0] inst_mem_file [0 : 15]; // Max 16 instructions
+    logic [7:0] golden_ofm_file [0 : OUT_H * OUT_W * (COUT_TILES * 16) - 1];
     initial begin
+        int real_cout;
+        longint offset;
+        longint bias_base_offset;
+        
         // Khởi tạo tín hiệu
         clk = 0;
         rst_n = 0;
         s_axi_awvalid = 0; s_axi_wvalid = 0; s_axi_arvalid = 0; s_axi_rready = 0; s_axi_bready = 0;
         
         $display("==================================================");
-        $display("Bắt đầu khởi tạo dữ liệu ngẫu nhiên (Random Data)");
+        $display("[+] Loading Golden Data from HEX files...");
         $display("==================================================");
         
+        $readmemh("ifm.hex", ifm_mem_file);
+        $readmemh("wgt.hex", wgt_mem_file);
+        $readmemh("bias.hex", bias_mem_file);
+        $readmemh("instructions.hex", inst_mem_file);
+        $readmemh("golden_ofm.hex", golden_ofm_file);
+
         // 1. Khởi tạo mảng DDR bằng 0
         ddr_mem.delete();
 
-        // 2. Sinh dữ liệu IFM ngẫu nhiên [-128..127]
-        for (int h = 0; h < IFM_H; h++) begin
-            for (int w = 0; w < IFM_W; w++) begin
-                for (int c = 0; c < C_IN; c++) begin
-                    ref_ifm[h][w][c] = $random;
-                    ddr_mem[IFM_ADDR + (h * IFM_W + w) * C_IN + c] = ref_ifm[h][w][c];
-                end
-            end
+        // 2. Nạp IFM vào DDR
+        for (int i = 0; i < $size(ifm_mem_file); i++) begin
+            ddr_mem[IFM_ADDR + i] = ifm_mem_file[i];
         end
 
-        // 3. Sinh WGT ngẫu nhiên (Lưu theo trật tự: C_out_tile -> C_in -> K_h -> K_w -> C_out_ch)
-        // Kiến trúc yêu cầu nạp 16 channels WGT cùng lúc (128-bit = 16 bytes)
-        for (int c_out_tile = 0; c_out_tile < C_OUT/16; c_out_tile++) begin
-            for (int c_in = 0; c_in < C_IN; c_in++) begin
-                for (int kh = 0; kh < K_SIZE; kh++) begin
-                    for (int kw = 0; kw < K_SIZE; kw++) begin
-                        for (int ch = 0; ch < 16; ch++) begin
-                            int real_cout = c_out_tile * 16 + ch;
-                            ref_wgt[real_cout][c_in][kh][kw] = $random;
-                            
-                            // Ghi vào DDR: Mỗi (c_in, kh, kw) chiếm 16 bytes (1 word nội bộ)
-                            longint offset = (c_out_tile * C_IN * K_SIZE * K_SIZE * 16) +
-                                             (c_in * K_SIZE * K_SIZE * 16) +
-                                             (kh * K_SIZE * 16) +
-                                             (kw * 16) + ch;
-                            ddr_mem[WGT_ADDR + offset] = ref_wgt[real_cout][c_in][kh][kw];
-                        end
-                    end
-                end
-            end
+        // 3. Nạp WGT vào DDR
+        for (int i = 0; i < $size(wgt_mem_file); i++) begin
+            ddr_mem[WGT_ADDR + i] = wgt_mem_file[i];
         end
 
-        // 4. Sinh BIAS ngẫu nhiên 16-bit
-        // Bias được đặt ngai sau đoạn Weight của Tile
-        for (int c_out_tile = 0; c_out_tile < C_OUT/16; c_out_tile++) begin
-            longint bias_base_offset = (c_out_tile + 1) * C_IN * K_SIZE * K_SIZE * 16; // Tạm quy ước bias nằm cuối
+        // 4. Nạp BIAS vào DDR
+        begin
+            automatic int total_wgt_elements = C_IN * K_SIZE * K_SIZE;
+            automatic int padded_elements_per_tile = ((total_wgt_elements + 15) / 16) * 16;
+            automatic int bias_base_word = ((C_OUT + 15) / 16) * padded_elements_per_tile;
             
-            for (int ch = 0; ch < 16; ch++) begin
-                int real_cout = c_out_tile * 16 + ch;
-                ref_bias[real_cout] = $random;
-                
-                // Bias 16-bit: Ghi 2 byte (Little Endian)
-                // Cấu trúc trong SRAM: 2 words = 32 bytes (16 kênh * 2 byte)
-                ddr_mem[WGT_ADDR + bias_base_offset + ch*2]     = ref_bias[real_cout][7:0];
-                ddr_mem[WGT_ADDR + bias_base_offset + ch*2 + 1] = ref_bias[real_cout][15:8];
+            for (int i = 0; i < $size(bias_mem_file); i++) begin
+                ddr_mem[WGT_ADDR + (bias_base_word * 16) + i] = bias_mem_file[i];
             end
         end
+
 
         // Bỏ Reset
         #100 rst_n = 1;
         #100;
 
-        $display("Gửi cấu hình PEA Array qua AXI-Lite...");
+        $display("[+] Sending PEA Array configuration via AXI-Lite...");
         // Các thanh ghi PEA Cfg map ở 0x100 trở đi trong lenet_accelerator.sv
         axi_lite_write(32'h0100, IFM_W); // ifm_width
         axi_lite_write(32'h0104, IFM_H); // ifm_height
@@ -360,113 +385,60 @@ module tb_lenet_accelerator();
         axi_lite_write(32'h0110, K_SIZE);// kernel_size
         axi_lite_write(32'h0114, RIGHT_SHIFT); // right_shift
         axi_lite_write(32'h0120, 0); // weight base nội bộ SRAM = 0
-        // Bias base = base của tile 0 weight + offset
-        axi_lite_write(32'h0124, C_IN * K_SIZE * K_SIZE); // bias base (word addr)
+        // Bias base = COUT_TILES * NUM_PASSES * 16 (Cho Conv3 là 1 * 25 * 16 = 400 words)
+        axi_lite_write(32'h0124, COUT_TILES * NUM_PASSES * 16); // bias base (word addr)
         axi_lite_write(32'h0128, RELU_EN); // relu enable
 
-        $display("Đẩy tập lệnh (Instructions) vào Controller (Instruction FIFO map ở 0x00)...");
-        // Format Lệnh 64-bit (chúng ta phân tích theo RTL của Controller):
-        // [63:60] Opcode
-        // OP_SET_ADDR (1): [59:58] 00=IFM, 01=WGT, 10=OFM. [39:0] addr
-        
-        // 1. SET ADDR
-        axi_lite_write(32'h0000, 32'h10000000); // Nửa thấp (IFM_ADDR)
-        axi_lite_write(32'h0004, 32'h10000000); // Nửa cao (Opcode=1, Type=00)
-        
-        axi_lite_write(32'h0000, 32'h20000000); // Nửa thấp (WGT_ADDR)
-        axi_lite_write(32'h0004, 32'h14000000); // Nửa cao (Opcode=1, Type=01)
+        $display("[+] Uploading Window Router Microcode...");
+        upload_microcode();
 
-        axi_lite_write(32'h0000, 32'h30000000); // Nửa thấp (OFM_ADDR)
-        axi_lite_write(32'h0004, 32'h18000000); // Nửa cao (Opcode=1, Type=10)
+        $display("[+] Pushing Instructions to Controller (Instruction FIFO mapped at 0x00)...");
+        // Đẩy toàn bộ lệnh (có thể lên tới 16 lệnh)
+        for(int i = 0; i < 16; i++) begin
+            if (inst_mem_file[i] !== 64'bx && inst_mem_file[i] !== 0) begin
+                send_instruction(inst_mem_file[i]);
+            end
+        end
 
-        // 2. LOAD_WGT (Opcode=4) - Cần DMA Bytes. 
-        // 16 kernels (5x5) + 16 biases(2 bytes) = 400 + 32 = 432 bytes
-        axi_lite_write(32'h0000, 432); 
-        axi_lite_write(32'h0004, 32'h40000000);
-
-        // 3. LOAD_IFM (Opcode=A) - Cần DMA Bytes. 10x10 = 100 bytes
-        axi_lite_write(32'h0000, 100);
-        axi_lite_write(32'h0004, 32'hA0000000);
-
-        // 4. RUN_MAC (Opcode=5) - Chỉ cần xung bật
-        axi_lite_write(32'h0000, 0);
-        axi_lite_write(32'h0004, 32'h50000000);
-
-        // 5. STORE_OFM (Opcode=7) - Cần DMA Bytes. 6x6 x 16 = 576 bytes
-        axi_lite_write(32'h0000, 576);
-        axi_lite_write(32'h0004, 32'h70000000);
-
-        // 6. FINISH (Opcode=F)
-        axi_lite_write(32'h0000, 0);
-        axi_lite_write(32'h0004, 32'hF0000000);
-
-        $display("Chờ tín hiệu ngắt hoàn thành (finish_irq_o)...");
+        $display("[?] Waiting for finish interrupt signal (finish_irq_o)...");
         wait(finish_irq_o);
-        $display("Đã nhận ngắt hoàn thành! Bắt đầu kiểm tra kết quả.");
+        $display("[!] Finish interrupt received! Starting result verification.");
 
         // =========================================================================
         // KIỂM TRA MÔ HÌNH THAM CHIẾU (REFERENCE CHECK)
         // =========================================================================
-        compute_reference();
+        // Tham chiếu đã được C++ sinh ra và lưu vào golden_ofm_file
         
         check_results();
 
         $finish;
     end
 
-    // Hàm tính toán Reference Model (Sát với phần cứng đã thiết kế)
-    task compute_reference();
-        for (int h = 0; h < OUT_H; h++) begin
-            for (int w = 0; w < OUT_W; w++) begin
-                for (int cout = 0; cout < C_OUT; cout++) begin
-                    int psum = 0;
-                    
-                    // Convolution
-                    for (int cin = 0; cin < C_IN; cin++) begin
-                        for (int kh = 0; kh < K_SIZE; kh++) begin
-                            for (int kw = 0; kw < K_SIZE; kw++) begin
-                                psum += ref_ifm[h+kh][w+kw][cin] * ref_wgt[cout][cin][kh][kw];
-                            end
-                        end
-                    end
-                    
-                    // Post Processing
-                    // Cộng Bias (Bias đã là int16, psum là int32)
-                    psum = psum + int'(ref_bias[cout]);
-                    
-                    // Right Shift Arithmetic
-                    psum = psum >>> RIGHT_SHIFT;
-                    
-                    // Saturating Clamp
-                    if (psum > 127) psum = 127;
-                    else if (psum < -128) psum = -128;
-                    
-                    // ReLU
-                    if (RELU_EN && psum < 0) psum = 0;
-                    
-                    ref_ofm[h][w][cout] = psum[7:0];
-                end
-            end
-        end
-    endtask
+
 
     // Hàm đối chiếu DDR với kết quả tham chiếu
     task check_results();
-        int errors = 0;
-        int checked = 0;
+        int errors;
+        int checked;
+        longint offset;
+        logic [7:0] hw_val;
+        logic [7:0] ref_val;
+        
+        errors = 0;
+        checked = 0;
         
         for (int h = 0; h < OUT_H; h++) begin
             for (int w = 0; w < OUT_W; w++) begin
                 for (int cout = 0; cout < C_OUT; cout++) begin
-                    // Tính offset ghi ra DMA: PEA ghi theo thứ tự Pixel -> Channel
-                    longint offset = (h * OUT_W + w) * 16 + cout;
-                    logic [7:0] hw_val = ddr_mem.exists(OFM_ADDR + offset) ? ddr_mem[OFM_ADDR + offset] : 8'hXX;
-                    logic [7:0] ref_val = ref_ofm[h][w][cout];
+                    // Tính offset ghi ra DMA: PEA ghi theo thứ tự Pixel -> Channel (padded to 16)
+                    offset = (h * OUT_W + w) * (COUT_TILES * 16) + cout;
+                    hw_val = ddr_mem.exists(OFM_ADDR + offset) ? ddr_mem[OFM_ADDR + offset] : 8'hXX;
+                    ref_val = golden_ofm_file[offset];
                     
                     checked++;
                     
                     if (hw_val !== ref_val) begin
-                        $display("[LỖI] Tại (h=%0d, w=%0d, c=%0d): HW = %0d, REF = %0d", h, w, cout, $signed(hw_val), $signed(ref_val));
+                        $display("[FAIL] At (h=%0d, w=%0d, c=%0d): HW = %0d, REF = %0d", h, w, cout, $signed(hw_val), $signed(ref_val));
                         errors++;
                     end
                 end
@@ -475,9 +447,9 @@ module tb_lenet_accelerator();
         
         $display("==================================================");
         if (errors == 0)
-            $display("[THÀNH CÔNG] Toàn bộ %0d pixels khớp hoàn toàn!", checked);
+            $display("[PASS] All %0d pixels match perfectly!", checked);
         else
-            $display("[THẤT BẠI] Có %0d / %0d pixels bị sai.", errors, checked);
+            $display("[FAIL] There are %0d / %0d mismatched pixels.", errors, checked);
         $display("==================================================");
     endtask
 

@@ -39,10 +39,10 @@ module ofm_post_processor #(
     output logic [PSUM_ADDR_W-1:0] psum_rd_addr,
     input  logic [15:0][31:0]      psum_rdata,      // 16 channels × 32-bit accumulated psum
 
-    // ---- OFM SRAM Write Interface ----
-    output logic                  ofm_we,
-    output logic [OFM_ADDR_W-1:0] ofm_addr,
-    output logic [15:0][7:0]      ofm_data
+    // ---- OFM Write Interface ----
+    output logic                   ofm_we,
+    output logic [OFM_ADDR_W-1:0]  ofm_addr,
+    output logic [15:0][7:0]       ofm_data
 );
 
     // =========================================================================
@@ -138,7 +138,30 @@ module ofm_post_processor #(
         end
     end
 
-    // =========================================================================
+    
+
+    
+    // Mở file và ghi log
+    integer fd;
+    initial begin
+        fd = $fopen("hardware_raw_psum.log", "w");
+        if (fd == 0) $display("Error opening hardware_raw_psum.log");
+    end
+
+    always_ff @(posedge clk) begin
+        if (r_s2_valid) begin
+            $fdisplay(fd, "ofm_addr: %0d", r_s2_addr);
+            for (int i = 0; i < 16; i++) begin
+                $fdisplay(fd, "  [%0d]: PSUM=%0d, BIAS=%0d, temp_sum=%0d, temp_shifted=%0d", i, $signed(psum_rdata[i]), $signed({{16{bias_data[i][15]}}, bias_data[i]}), 
+                    $signed(psum_rdata[i]) + $signed({{16{bias_data[i][15]}}, bias_data[i]}),
+                    ($signed(psum_rdata[i]) + $signed({{16{bias_data[i][15]}}, bias_data[i]})) >>> reg_right_shift
+                );
+            end
+        end
+    end
+
+        // =========================================================================
+    // CODE CŨ (Đã comment lại để debug raw psum)
     // 4. Stage 2: Cộng Bias (sign-extend 16→32) + Arithmetic Right Shift
     //    Input: psum_rdata (valid 1 cycle sau lệnh đọc BRAM)
     //    Output: r_s3_shifted (registered)
@@ -157,9 +180,11 @@ module ofm_post_processor #(
             r_s3_addr  <= r_s2_addr;
 
             for (int i = 0; i < 16; i++) begin
-                r_s3_shifted[i] <= ($signed(psum_rdata[i]) +
-                                    $signed({{16{bias_data[i][15]}}, bias_data[i]}))
-                                   >>> reg_right_shift;
+                logic signed [31:0] temp_sum;
+                logic signed [31:0] temp_shifted;
+                temp_sum = $signed(psum_rdata[i]) + $signed({{16{bias_data[i][15]}}, bias_data[i]});
+                temp_shifted = temp_sum >>> reg_right_shift;
+                r_s3_shifted[i] <= temp_shifted;
             end
         end
     end
@@ -173,8 +198,8 @@ module ofm_post_processor #(
             logic signed [7:0] w_clamped;
 
             // Saturating clamp về dải signed 8-bit
-            assign w_clamped = (r_s3_shifted[gi] > 32'sd127)  ? 8'sd127  :
-                               (r_s3_shifted[gi] < -32'sd128) ? -8'sd128 :
+            assign w_clamped = ($signed(r_s3_shifted[gi]) > 32'sd127)  ? 8'sd127  :
+                               ($signed(r_s3_shifted[gi]) < -32'sd128) ? -8'sd128 :
                                r_s3_shifted[gi][7:0];
 
             // ReLU: ép giá trị âm về 0
@@ -184,5 +209,28 @@ module ofm_post_processor #(
 
     assign ofm_we   = r_s3_valid;
     assign ofm_addr = r_s3_addr;
+
+    // DEBUG LOGS
+    always_ff @(posedge clk) begin
+        if (r_s2_valid && r_s2_addr < 16) begin
+            $display("[OFM_PP_DEBUG] Raw hardware psums at addr=%0d (Stage 2):", r_s2_addr);
+            for (int i = 0; i < 16; i++) begin
+                $display("  chan %0d: raw_hw_psum=%0d", i, $signed(psum_rdata[i]));
+            end
+        end
+        if (ofm_we && ofm_addr < 16) begin
+            $display("[OFM_PP] ofm_addr=%0d Detailed Channel Stats:", ofm_addr);
+            for (int i = 0; i < 16; i++) begin
+                $display("  chan %0d: shifted=%0d, ofm_data=%0d",
+                         i, $signed(r_s3_shifted[i]), $signed(ofm_data[i]));
+            end
+        end
+        if (start) begin
+            $display("[OFM_PP] START asserted | reg_out_pixels=%0d", reg_out_pixels);
+        end
+        if (done) begin
+            $display("[OFM_PP] DONE asserted");
+        end
+    end
 
 endmodule

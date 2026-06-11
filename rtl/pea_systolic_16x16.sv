@@ -75,6 +75,39 @@ module pea_systolic_16x16 (
     endgenerate
 
     // ------------------------------------------------------------------------
+    // 1b. PSUM INPUT SKEW BUFFERS (Stagger psum horizontally by col index)
+    // ------------------------------------------------------------------------
+    logic [15:0][31:0] w_skewed_psum_in;
+    logic [15:0]       w_skewed_psum_en;
+
+    generate
+        for (c = 0; c < 16; c++) begin : skew_psum_col
+            // Shift register of length '2*c + 1'
+            localparam delay = 2 * c + 1;
+            logic [31:0] r_sr_psum_data [0:delay-1];
+            logic        r_sr_psum_en   [0:delay-1];
+            
+            always_ff @(posedge clk) begin
+                if (!rst_n) begin
+                    for (int k=0; k<delay; k++) begin
+                        r_sr_psum_data[k] <= 32'd0;
+                        r_sr_psum_en[k]   <= 1'b0;
+                    end
+                end else begin
+                    r_sr_psum_data[0] <= psum_in_top[c];
+                    r_sr_psum_en[0]   <= psum_en_top[c];
+                    for (int k=1; k<delay; k++) begin
+                        r_sr_psum_data[k] <= r_sr_psum_data[k-1];
+                        r_sr_psum_en[k]   <= r_sr_psum_en[k-1];
+                    end
+                end
+            end
+            assign w_skewed_psum_in[c] = r_sr_psum_data[delay-1];
+            assign w_skewed_psum_en[c] = r_sr_psum_en[delay-1];
+        end
+    endgenerate
+
+    // ------------------------------------------------------------------------
     // 2. 16x16 PE GRID
     // ------------------------------------------------------------------------
     logic [7:0]  w_weight_data [0:16][0:15];
@@ -88,8 +121,8 @@ module pea_systolic_16x16 (
         // Boundary connections
         for (c = 0; c < 16; c++) begin : top_boundary
             assign w_weight_data[0][c] = weight_in_top[c];
-            assign w_p_data[0][c] = psum_in_top[c];
-            assign w_p_en[0][c]   = psum_en_top[c];
+            assign w_p_data[0][c] = w_skewed_psum_in[c];
+            assign w_p_en[0][c]   = w_skewed_psum_en[c];
         end
         for (r = 0; r < 16; r++) begin : left_boundary
             assign w_d_data[r][0] = w_skewed_data_in[r];
@@ -99,7 +132,10 @@ module pea_systolic_16x16 (
 
         for (r = 0; r < 16; r++) begin : grid_row
             for (c = 0; c < 16; c++) begin : grid_col
-                mac_pe u_pe (
+                mac_pe #(
+                    .ROW(r),
+                    .COL(c)
+                ) u_pe (
                     .clk            (clk),
                     .rst_n          (rst_n),
                     .load_weight_en (load_weight_en[c]),
@@ -127,7 +163,7 @@ module pea_systolic_16x16 (
     // ------------------------------------------------------------------------
     generate
         for (c = 0; c < 16; c++) begin : deskew_col
-            localparam delay = 30 - 2 * c;
+            localparam delay = 2 * (15 - c);
             
             if (delay == 0) begin
                 assign psum_out_bottom[c] = w_p_data[16][c];

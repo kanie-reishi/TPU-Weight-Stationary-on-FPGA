@@ -144,12 +144,12 @@ module controller #(
 
             ST_WAIT_MAC: begin
                 // Auto-stall: Đứng đợi cho đến khi PE Array tính xong layer
-                if (mac_done_i) r_next_state = ST_FETCH;
+                if (mac_done_i && !mac_start_o) r_next_state = ST_FETCH;
             end
 
             ST_WAIT_POOL: begin
                 // Auto-stall: Đứng đợi Pool tính xong
-                if (pool_done_i) r_next_state = ST_FETCH;
+                if (pool_done_i && !pool_start_o) r_next_state = ST_FETCH;
             end
 
             ST_WAIT_SYNC: begin

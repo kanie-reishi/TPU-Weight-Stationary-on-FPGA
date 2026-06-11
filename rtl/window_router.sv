@@ -8,7 +8,7 @@ module window_router #(
     
     // Microcode config interface (Từ AXI-Lite)
     input  logic i_cfg_we,
-    input  logic [4:0] i_cfg_addr,      // 0 - 24
+    input  logic [15:0] i_cfg_addr,
     input  logic [31:0] i_cfg_data, 
     
     // Control signal từ FSM
@@ -33,19 +33,12 @@ module window_router #(
     logic [4:0] target_pass_id;
     logic [2:0] word_index;
 
-    assign is_microcode_space = (cfg_addr >= 32'h100) && (cfg_addr < 32'h420);
-    assign target_pass_id     = cfg_addr[9:5]; // Lấy Pass ID
-    assign word_index         = cfg_addr[4:2]; // Lấy số thứ tự Word (0 đến 4)
+    assign is_microcode_space = (i_cfg_addr >= 16'h0200) && (i_cfg_addr < 16'h0600);
+    assign target_pass_id     = (i_cfg_addr - 16'h0200) >> 5; // Mỗi Pass 32 bytes
+    assign word_index         = i_cfg_addr[4:2]; // Lấy số thứ tự Word (0 đến 4)
     
     // Khai báo LUTRAM chứa Microcode (25 entries x 160 bits)
     (* ram_style = "distributed" *) logic [159:0] microcode_ram[0:24];
-    
-    // Ghi cấu hình vào Microcode RAM
-    always_ff @(posedge clk) begin
-        if (i_cfg_we) begin
-            microcode_ram[i_cfg_addr] <= i_cfg_data;
-        end
-    end
     // Đọc Microcode RAM bằng current_pass_id
     //=================================================//
     //                  2. Combinational Logic         //
@@ -73,22 +66,22 @@ module window_router #(
     //                 3. Packing and Writing RAM      //
     //=================================================//
     always_ff @(posedge clk) begin
-        if (cfg_we && is_microcode_space) begin
+        if (i_cfg_we && is_microcode_space) begin
             // 1. Ghi từng mảnh 32-bit vào Thanh ghi tạm
             case (word_index)
-                3'd0: holding_reg[31:0]    <= cfg_data;
-                3'd1: holding_reg[63:32]   <= cfg_data;
-                3'd2: holding_reg[95:64]   <= cfg_data;
-                3'd3: holding_reg[127:96]  <= cfg_data;
-                3'd4: holding_reg[159:128] <= cfg_data;
+                3'd0: holding_reg[31:0]    <= i_cfg_data;
+                3'd1: holding_reg[63:32]   <= i_cfg_data;
+                3'd2: holding_reg[95:64]   <= i_cfg_data;
+                3'd3: holding_reg[127:96]  <= i_cfg_data;
+                3'd4: holding_reg[159:128] <= i_cfg_data;
             endcase
             
             // 2. CÒ KÍCH HOẠT (Trigger Write): 
             // Khi CPU ghi mảnh cuối cùng (Word 4), bê cả 160-bit ập vào RAM
             if (word_index == 3'd4) begin
-                // Lưu ý: Phải ghép khối holding_reg (cũ) với cfg_data (mới) 
+                // Lưu ý: Phải ghép khối holding_reg (cũ) với i_cfg_data (mới) 
                 // để đảm bảo không bị trễ 1 clock.
-                microcode_ram[target_pass_id] <= {cfg_data, holding_reg[127:0]};
+                microcode_ram[target_pass_id] <= {i_cfg_data, holding_reg[127:0]};
             end
         end
     end

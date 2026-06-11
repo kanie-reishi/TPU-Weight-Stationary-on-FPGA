@@ -34,6 +34,12 @@ module sram_tdp #(
     // Lưu ý: Không khởi tạo giá trị ban đầu (initial) để giống với RAM thực tế trên chip.
     logic [DWIDTH-1:0] r_mem [0:(1<<AWIDTH)-1];
 
+    initial begin
+        for (int i = 0; i < (1<<AWIDTH); i++) begin
+            r_mem[i] = '0;
+        end
+    end
+
     // ==========================================
     // LOGIC ĐỌC/GHI CHO PORT A
     // ==========================================
