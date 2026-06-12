@@ -139,13 +139,17 @@ module ofm_post_processor #(
     end
 
     // =========================================================================
-    // 4. Stage 2: Cộng Bias (sign-extend 16→32) + Arithmetic Right Shift
+    // 4. Stage 2: Cộng Bias (sign-extend 16→32) + Arithmetic Right Shift (with rounding)
     //    Input: psum_rdata (valid 1 cycle sau lệnh đọc BRAM)
     //    Output: r_s3_shifted (registered)
     // =========================================================================
     logic r_s3_valid;
     logic [OFM_ADDR_W-1:0] r_s3_addr;
     logic signed [15:0][31:0] r_s3_shifted;
+
+    // Tính toán lượng làm tròn (rounding term) cho phép dịch phải
+    logic [31:0] w_rounding;
+    assign w_rounding = (reg_right_shift == 0) ? 32'd0 : (32'd1 << (reg_right_shift - 1));
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -159,7 +163,8 @@ module ofm_post_processor #(
             for (int i = 0; i < 16; i++) begin
                 logic signed [31:0] temp_sum;
                 logic signed [31:0] temp_shifted;
-                temp_sum = $signed(psum_rdata[i]) + $signed((bias_data[i]));
+                // Cộng psum, bias (16-bit signed) và số hạng làm tròn w_rounding
+                temp_sum = $signed(psum_rdata[i]) + $signed(bias_data[i]) + $signed({1'b0, w_rounding});
                 temp_shifted = temp_sum >>> reg_right_shift;
                 r_s3_shifted[i] <= temp_shifted;
             end

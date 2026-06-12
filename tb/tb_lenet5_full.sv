@@ -603,11 +603,15 @@ module tb_lenet5_full();
 
             // Calculate Prediction (Argmax) on logit values in DDR
             begin
-                automatic int max_val = -2147483647 - 1;
-                automatic int pred = -1;
+                int max_val;
+                int pred;
+                max_val = -2147483647 - 1;
+                pred = -1;
                 for (int c = 0; c < 10; c++) begin
-                    automatic logic [7:0] val = ddr_mem[40'h3000_0000 + img_idx * 16 + c];
-                    automatic int s_val = $signed(val);
+                    logic [7:0] val;
+                    int s_val;
+                    val = ddr_mem[40'h3000_0000 + img_idx * 16 + c];
+                    s_val = $signed(val);
                     if (s_val > max_val) begin
                         max_val = s_val;
                         pred = c;
