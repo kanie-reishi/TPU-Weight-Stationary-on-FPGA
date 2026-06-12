@@ -157,7 +157,7 @@ The host CPU issues tasks using 64-bit commands. The command structure is partit
 ### 3.3. Window Router Microcode (Base: `0x0200`)
 The Window Router connects spatial values from the 5x5 Line Buffer window to the 16 PE rows. This routing is controlled by a **160-bit microcode word** per compute pass (stored from `0x0200` to `0x05FF`). The 160 bits represent sixteen 10-bit routes, one for each PE row:
 
-$$\text{Sub-Instruction}[r] = \text{microcode\_word}[r \times 10 + 9 : r \times 10]$$
+`Sub-Instruction[r] = microcode_word[r * 10 + 9 : r * 10]`
 
 | Sub-Bit Range | Field Name | Description |
 | :---: | :---: | :--- |
