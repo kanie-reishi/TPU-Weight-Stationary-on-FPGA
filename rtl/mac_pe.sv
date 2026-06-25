@@ -41,7 +41,7 @@ module mac_pe #(
     logic        r_swap;
 
     // Stage 2 Registers (Latched at T+2, representing MREG & propagation)
-    logic signed [15:0] r_mult_res;
+    (* use_dsp = "yes" *) logic signed [15:0] r_mult_res;
     logic [7:0]  r_data_out;
     logic        r_data_en_out;
     logic        r_swap_out;

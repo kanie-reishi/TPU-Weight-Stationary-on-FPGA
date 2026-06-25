@@ -170,16 +170,19 @@ module tensor_processing_unit_top #(
     );
 
     // =========================================================
-    // LOGIC ĐIỀU KHIỂN AXI-LITE READ
+    // LOGIC ĐIỀU KHIỂN AXI-LITE READ / WRITE RESPONSE
     // =========================================================
     logic axi_arready_reg, axi_rvalid_reg;
     logic [31:0] axi_araddr_reg;
     logic [31:0] axi_rdata_reg;
+    logic        axi_bvalid_reg;
 
     assign s_axi_arready = axi_arready_reg;
     assign s_axi_rvalid  = axi_rvalid_reg;
     assign s_axi_rdata   = axi_rdata_reg;
-    assign s_axi_rresp   = 2'b00; // Luôn trả lời OKAY
+    assign s_axi_rresp   = 2'b00;
+    assign s_axi_bvalid  = axi_bvalid_reg;
+    assign s_axi_bresp   = 2'b00;
 
     // 1. Chốt địa chỉ đọc (AR Channel)
     always_ff @(posedge clk or negedge rst_n) begin
@@ -212,7 +215,7 @@ module tensor_processing_unit_top #(
                 // MUX BỘ NHỚ LƯU TRẠNG THÁI (STATUS REGISTERS)
                 case (axi_araddr_reg[7:0])
                     8'h00: axi_rdata_reg <= {31'd0, ctrl_mac_done}; // CPU đọc 0x00 để biết tính xong chưa
-                    8'h04: axi_rdata_reg <= {31'd0, finish_irq_o};  // Đọc cờ ngắt
+                    8'h04: axi_rdata_reg <= {31'd0, finish_irq_o};  // Đọc trạng thái cờ ngắt
                     // Bạn có thể map thêm các thanh ghi gỡ lỗi (debug) ở đây
                     default: axi_rdata_reg <= 32'hDEADBEEF; // Báo hiệu đọc sai địa chỉ
                 endcase
@@ -220,6 +223,21 @@ module tensor_processing_unit_top #(
                 // CPU đã nhận được dữ liệu, tắt cờ valid
                 axi_rvalid_reg <= 1'b0;
             end
+        end
+    end
+
+    // 4. Write response (B channel)
+    logic write_accept;
+    assign write_accept = s_axi_awvalid && s_axi_wvalid && s_axi_awready && s_axi_wready;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            axi_bvalid_reg <= 1'b0;
+        end else begin
+            if (write_accept)
+                axi_bvalid_reg <= 1'b1;
+            else if (axi_bvalid_reg && s_axi_bready)
+                axi_bvalid_reg <= 1'b0;
         end
     end
 

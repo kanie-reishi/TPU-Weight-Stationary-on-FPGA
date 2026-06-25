@@ -274,6 +274,11 @@ module controller #(
                     // Đảo chiều Ping-Pong sau khi hoàn thành Pool
                     if (pool_done_i) r_src_bank_ptr <= (r_src_bank_ptr == BANK_PING) ? BANK_PONG : BANK_PING;
                 end
+
+                ST_HALT: begin
+                    // Hold finish_irq high until reset (software polls 0x04 / PS IRQ)
+                    finish_irq_o <= 1'b1;
+                end
             endcase
         end
     end

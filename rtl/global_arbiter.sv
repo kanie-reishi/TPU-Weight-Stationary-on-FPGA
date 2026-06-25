@@ -104,20 +104,25 @@ module global_arbiter #(
     
     // Thanh ghi tạm lưu 32-bit cao của lệnh
     logic [31:0] r_shadow_reg_high;
-    
+    logic        w_axi_write_fire;
+
+    // Pulse only when the AXI-Lite write handshake completes (devmem2 can hold
+    // AWVALID/WVALID high for multiple cycles — do not push the FIFO every cycle).
+    assign w_axi_write_fire = s_axi_awvalid && s_axi_wvalid && s_axi_awready && s_axi_wready;
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             r_shadow_reg_high <= 32'd0;
         end else begin
             // Ghi 32-bit cao vào địa chỉ 0x04
-            if (s_axi_awvalid && s_axi_wvalid && s_axi_awaddr == 32'h0000_0004) begin
+            if (w_axi_write_fire && s_axi_awaddr == 32'h0000_0004) begin
                 r_shadow_reg_high <= s_axi_wdata;
             end
         end
     end
     
     // Khi CPU ghi 32-bit thấp vào địa chỉ 0x00 (Thanh ghi nạp lệnh)
-    assign w_fifo_wr_en   = (s_axi_awvalid && s_axi_wvalid && s_axi_awaddr == 32'h0000_0000);
+    assign w_fifo_wr_en   = w_axi_write_fire && (s_axi_awaddr == 32'h0000_0000);
     
     // Ghép 32-bit cao từ shadow_reg và 32-bit thấp từ wdata
     assign w_fifo_wr_data = {r_shadow_reg_high, s_axi_wdata};

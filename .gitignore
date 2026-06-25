@@ -18,3 +18,11 @@ tb/bin/
 tb/logs/
 tb/scripts/
 tb/archive
+
+# Local software artifacts
+SoftWareC++/*.rar
+SoftWareC++/kv260_app/
+SoftWareC++/reference/
+
+# Generated test vectors / dumps
+tb/*.hex
