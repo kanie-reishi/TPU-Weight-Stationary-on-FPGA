@@ -33,7 +33,23 @@ module tensor_processing_unit_top #(
     output logic [1:0]              s_axi_bresp,
 
     // =========================================================
-    // 2. NGẮT (INTERRUPT TỚI CPU)
+    // 2. GIAO DIỆN AXI STREAM SLAVE & MASTER (DMA <-> FPGA)
+    // =========================================================
+    // S_AXIS
+    input  logic                    s_axis_tvalid,
+    output logic                    s_axis_tready,
+    input  logic [127:0]            s_axis_tdata,
+    input  logic                    s_axis_tlast,
+    input  logic [3:0]              s_axis_tdest,
+
+    // M_AXIS
+    output logic                    m_axis_tvalid,
+    input  logic                    m_axis_tready,
+    output logic [127:0]            m_axis_tdata,
+    output logic                    m_axis_tlast,
+
+    // =========================================================
+    // 3. NGẮT (INTERRUPT TỚI CPU)
     // =========================================================
     output logic                    finish_irq_o
 );
@@ -106,6 +122,15 @@ module tensor_processing_unit_top #(
         .s_axi_awvalid(s_axi_awvalid), .s_axi_awready(s_axi_awready),
         .s_axi_awaddr(s_axi_awaddr),   .s_axi_wvalid(s_axi_wvalid),
         .s_axi_wready(s_axi_wready),   .s_axi_wdata(s_axi_wdata),
+        
+        // AXI Stream
+        .s_axis_tvalid(s_axis_tvalid), .s_axis_tready(s_axis_tready),
+        .s_axis_tdata(s_axis_tdata),   .s_axis_tlast(s_axis_tlast),
+        .s_axis_tdest(s_axis_tdest),
+        
+        .m_axis_tvalid(m_axis_tvalid), .m_axis_tready(m_axis_tready),
+        .m_axis_tdata(m_axis_tdata),   .m_axis_tlast(m_axis_tlast),
+
         // Instruction FIFO
         .ctrl_inst_data_o(w_inst_data), .ctrl_inst_empty_o(w_inst_empty), .ctrl_inst_read_i(w_inst_read),
         // SRAM Port A

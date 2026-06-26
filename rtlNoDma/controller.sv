@@ -106,8 +106,8 @@ module controller #(
                 
                 case (r_opcode)
                     OP_SET_ADDR, OP_SET_DIM, OP_SET_KNL: r_next_state = ST_FETCH; // Cập nhật tham số xong thì nạp tiếp
-                    // [GIẢNG BÀI] 2. Thêm OP_LOAD_IFM vào nhóm lệnh kích hoạt tiến trình DMA.
-                    OP_LOAD_WGT, OP_LOAD_IFM, OP_STORE_OFM: r_next_state = ST_EXEC_DMA;
+                    // Không còn dùng lệnh DMA do đã chuyển sang AXI Stream
+                    OP_LOAD_WGT, OP_LOAD_IFM, OP_STORE_OFM: r_next_state = ST_FETCH;
                     OP_RUN_MAC:                          r_next_state = ST_WAIT_MAC;
                     OP_RUN_POOL:                         r_next_state = ST_WAIT_POOL;
                     OP_SYNC:                             r_next_state = ST_WAIT_SYNC;
@@ -129,8 +129,8 @@ module controller #(
             end
 
             ST_WAIT_SYNC: begin
-                // Block pipeline cho đến khi Arbiter báo DMA đã rảnh
-                if (!dma_busy_i) r_next_state = ST_FETCH;
+                // Bỏ qua dma_busy do sử dụng AXI Stream trực tiếp
+                r_next_state = ST_FETCH;
             end
 
             ST_HALT: begin
