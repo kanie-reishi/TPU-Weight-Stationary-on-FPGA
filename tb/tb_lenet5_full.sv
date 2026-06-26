@@ -320,7 +320,7 @@ module tb_lenet5_full();
             send_instruction({4'h1, 2'b01, 18'h0, wgt_addr});
             send_instruction({4'h1, 2'b10, 18'h0, ofm_addr});
             send_instruction({4'h2, 12'h0, 16'd1, 16'd1, 16'd84});
-            send_instruction({4'h3, 28'h0, 16'd10, 8'd1, 4'd1, 4'd0});
+            send_instruction({4'h3, 28'h0, 16'd10, 8'd1, 4'd1, 4'd7});
             send_instruction({4'h4, 28'h0, 32'd1568});
             send_instruction({4'hA, 28'h0, 32'd96});
             send_instruction({4'h5, 59'h0, 1'b0}); // relu_en=0
@@ -581,7 +581,7 @@ module tb_lenet5_full();
             axi_lite_write(32'h0108, 84);  // channels_in
             axi_lite_write(32'h010C, 10);  // channels_out
             axi_lite_write(32'h0110, 1);   // kernel_size
-            axi_lite_write(32'h0114, 0);   // right_shift
+            axi_lite_write(32'h0114, 7);   // right_shift (OUT, matches right_shifts.json)
             axi_lite_write(32'h0120, 0);   // weight_base
             axi_lite_write(32'h0124, 96);   // bias_base
             axi_lite_write(32'h0128, 0);   // relu_en

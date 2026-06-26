@@ -15,6 +15,7 @@ Vi du:
     python script/run_sim.py tb_conv1
     python script/run_sim.py tb_tpu_top
     python script/run_sim.py tb/tb_lenet5_full.sv --workdir tb
+    python script/run_sim.py tb_lenet5_nodma --rtl-dir rtlNoDma --workdir tb
     python script/run_sim.py tb_conv1 --oss "D:/Downloads/oss-cad-suite"
 """
 
@@ -28,7 +29,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RTL_DIR = ROOT / "rtl"
 TB_DIR = ROOT / "tb"
 BUILD_DIR = ROOT / "build"
 
@@ -66,9 +66,9 @@ def detect_top_module(tb_file: Path) -> str:
     return match.group(1)
 
 
-def collect_sources(tb_file: Path) -> list[Path]:
+def collect_sources(tb_file: Path, rtl_dir: Path) -> list[Path]:
     """Gom tat ca RTL + testbench. Module rtl/ va rtl/legacy/ khong trung ten."""
-    sources = sorted(RTL_DIR.rglob("*.sv")) + sorted(RTL_DIR.rglob("*.v"))
+    sources = sorted(rtl_dir.rglob("*.sv")) + sorted(rtl_dir.rglob("*.v"))
     if tb_file not in sources:
         sources.append(tb_file)
     return sources
@@ -112,12 +112,27 @@ def main() -> int:
         help="Thu muc chay vvp (mac dinh: thu muc chua testbench, thuong la tb/)",
     )
     parser.add_argument("--oss", help="Duong dan oss-cad-suite (mac dinh: env OSS_CAD_SUITE)")
+    parser.add_argument(
+        "--rtl-dir",
+        default="rtl",
+        help="Thu muc RTL (mac dinh: rtl; dung rtlNoDma cho stream path)",
+    )
+    parser.add_argument(
+        "--define",
+        dest="defines",
+        action="append",
+        default=[],
+        help="Them +define+NAME hoac +define+NAME=VAL (co the lap lai)",
+    )
     parser.add_argument("--vcd", action="store_true", help="Bao TB dump waveform (define DUMP_WAVE)")
     args = parser.parse_args()
 
     tb_file = resolve_testbench(args.testbench)
     top = args.top or detect_top_module(tb_file)
     workdir = Path(args.workdir).resolve() if args.workdir else tb_file.parent
+    rtl_dir = (ROOT / args.rtl_dir).resolve()
+    if not rtl_dir.is_dir():
+        sys.exit(f"[ERROR] Khong tim thay thu muc RTL: {rtl_dir}")
     oss = find_oss(args.oss)
 
     if os.name == "nt" and oss is None:
@@ -130,15 +145,18 @@ def main() -> int:
     BUILD_DIR.mkdir(exist_ok=True)
     out_vvp = BUILD_DIR / f"{tb_file.stem}.vvp"
 
-    sources = collect_sources(tb_file)
+    sources = collect_sources(tb_file, rtl_dir)
     src_args = " ".join(f'"{p}"' for p in sources)
-    define = "+define+DUMP_WAVE " if args.vcd else ""
+    define = "-DDUMP_WAVE " if args.vcd else ""
+    for d in args.defines:
+        define += f"-D{d} "
 
     prefix = build_prefix(oss)
 
     print("=" * 70)
     print(f" Testbench : {tb_file}")
     print(f" Top module: {top}")
+    print(f" RTL dir   : {rtl_dir}")
     print(f" Workdir   : {workdir}")
     print(f" Output    : {out_vvp}")
     print(f" Sources   : {len(sources)} file")

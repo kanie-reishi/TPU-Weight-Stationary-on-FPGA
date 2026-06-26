@@ -123,25 +123,25 @@ def hw_conv(x_uint8: np.ndarray,
 
 
 def hw_relu_shift_clamp(acc: np.ndarray, rs: int) -> np.ndarray:
-    """
-    Post-MAC pipeline -- matches shift_relu_clamp.v
-      1. ReLU  : x = max(0, x)
-      2. Shift  : x = (x + 2^(rs-1)) >> rs    [arithmetic, signed, with rounding]
-      3. Clamp  : x = min(x, 127)
+    """ReLU + round-shift + clamp [0,127] — hidden layers (relu_en=1 on HW)."""
+    return hw_shift_sat_int8(acc, rs, relu_en=True).astype(np.uint8)
 
-    Verilog equivalent:
-      if (acc[MSB]) conv_out <= 0;              // ReLU via sign bit
-      else if (acc > SAT_THRESH) conv_out <= 127;
-      else conv_out <= (acc + (1<<<(RS-1))) >>> RS;
+
+def hw_shift_sat_int8(acc: np.ndarray, rs: int, relu_en: bool = False) -> np.ndarray:
     """
-    after_relu  = np.maximum(acc, 0)
+    Matches ofm_post_processor.sv stage 2–3:
+      sum + rounding >>> rs, then signed saturate [-128,127], optional ReLU.
+    """
+    temp = acc.astype(np.int64)
     if rs == 0:
-        after_shift = after_relu
+        shifted = temp
     else:
-        rounding    = np.int64(1) << (rs - 1)
-        after_shift = (after_relu + rounding) >> rs
-    after_clamp = np.clip(after_shift, 0, 127).astype(np.uint8)
-    return after_clamp
+        rounding = np.int64(1) << (rs - 1)
+        shifted = (temp + rounding) >> rs
+    clamped = np.clip(shifted, -128, 127)
+    if relu_en:
+        clamped = np.maximum(clamped, 0)
+    return clamped.astype(np.int8)
 
 
 def hw_pool(x: np.ndarray, k: int = 2) -> np.ndarray:
@@ -217,9 +217,10 @@ def hw_forward(img_uint8: np.ndarray,
     f6_out = hw_relu_shift_clamp(f6_acc, rs["f6"])                 # [84] uint8
     mid.update({"f6_acc": f6_acc, "f6_out": f6_out})
 
-    # ---- OUT: no ReLU, no shift -- raw INT32 logits ----
-    logits = hw_fc(f6_out, weights["out_w"], weights["out_b"])     # [10] int64
-    mid["logits"] = logits
+    # ---- OUT: signed shift + saturate (relu_en=0 on HW) ----
+    out_acc = hw_fc(f6_out, weights["out_w"], weights["out_b"])     # [10] int64
+    logits  = hw_shift_sat_int8(out_acc, rs["out"], relu_en=False)  # [10] int8
+    mid.update({"out_acc": out_acc, "logits": logits})
 
     pred = int(np.argmax(logits))
 
@@ -244,8 +245,9 @@ def hw_forward(img_uint8: np.ndarray,
         print(f"  F6_ACC  [0..7]={f6_acc[:8].tolist()}")
         print(f"  F6_OUT  [0..7]={f6_out[:8].tolist()}  "
               f"nonzero={np.count_nonzero(f6_out)}/84")
-        print(f"  LOGITS  {logits.tolist()}")
-        print(f"  PRED    class={pred}  logit={logits[pred]}")
+        print(f"  OUT_ACC [0..9]={out_acc.tolist()}")
+        print(f"  LOGITS  {logits.tolist()}  (rs={rs['out']})")
+        print(f"  PRED    class={pred}  logit={int(logits[pred])}")
 
     return pred, mid
 

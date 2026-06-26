@@ -15,7 +15,7 @@ Output layout (weights/):
   f6_bias.hex     INT32 [84]
   out_weight.hex  INT8  [10, 84]        = 840 values
   out_bias.hex    INT32 [10]
-  right_shifts.json   {"c1":N,"c3":N,"c5":N,"f6":N}
+  right_shifts.json   {"c1":N,"c3":N,"c5":N,"f6":N,"out":N}
   scales.json         full scale chain for reference
 
 Hex format (Verilog $readmemh compatible):
@@ -76,7 +76,7 @@ def calibrate(model: LeNet5, calib_loader: DataLoader) -> dict:
     Return per-layer peak float activation (before ReLU, after conv/fc).
     """
     model.eval()
-    peaks = {"c1": 0.0, "c3": 0.0, "c5": 0.0, "f6": 0.0}
+    peaks = {"c1": 0.0, "c3": 0.0, "c5": 0.0, "f6": 0.0, "out": 0.0}
 
     def hook(name):
         def fn(_, _input, output):
@@ -90,6 +90,7 @@ def calibrate(model: LeNet5, calib_loader: DataLoader) -> dict:
         model.c3.register_forward_hook(hook("c3")),
         model.c5.register_forward_hook(hook("c5")),
         model.f6.register_forward_hook(hook("f6")),
+        model.out.register_forward_hook(hook("out")),
     ]
 
     print(f"  Calibrating on {CALIB_SIZE} images...")
@@ -135,6 +136,7 @@ def compute_scales(params: dict, peaks: dict) -> tuple[dict, dict, dict]:
     s_f6_out = s_f6_acc * (1 << rs_f6)
 
     s_out_acc = s_f6_out * s["out"]
+    rs_out    = compute_rs(peaks["out"] / s_out_acc)
 
     acc_scales = {
         "c1":  s_c1_acc,
@@ -143,12 +145,19 @@ def compute_scales(params: dict, peaks: dict) -> tuple[dict, dict, dict]:
         "f6":  s_f6_acc,
         "out": s_out_acc,
     }
-    right_shifts = {"c1": rs_c1, "c3": rs_c3, "c5": rs_c5, "f6": rs_f6}
+    right_shifts = {"c1": rs_c1, "c3": rs_c3, "c5": rs_c5, "f6": rs_f6, "out": rs_out}
 
     print(f"\n  Right-shifts (data-driven, headroom_bits={HEADROOM_BITS}):")
     target = 127 >> HEADROOM_BITS
+    peak_int_by_layer = {
+        "c1":  peaks["c1"] / s_c1_acc,
+        "c3":  peaks["c3"] / s_c3_acc,
+        "c5":  peaks["c5"] / s_c5_acc,
+        "f6":  peaks["f6"] / s_f6_acc,
+        "out": peaks["out"] / s_out_acc,
+    }
     for layer, rs in right_shifts.items():
-        peak_int = peaks[layer] / acc_scales[layer]
+        peak_int = peak_int_by_layer[layer]
         after    = int(peak_int) >> rs if rs > 0 else int(peak_int)
         print(f"    {layer.upper()}: peak_int={peak_int:>10,.0f}  rs={rs:>2}  "
               f"after_shift={after:>4}  target={target}  "

@@ -107,6 +107,8 @@ module tensor_processing_unit_top #(
     logic [3:0]  w_stride, w_shift_amt;
     logic        w_relu_en;
     logic [1:0]  w_pool_type;
+    logic        w_engine_busy;
+    logic        w_m_axis_busy;
 
     // =========================================================
     // 1. GLOBAL ARBITER (AXI)
@@ -130,6 +132,11 @@ module tensor_processing_unit_top #(
         
         .m_axis_tvalid(m_axis_tvalid), .m_axis_tready(m_axis_tready),
         .m_axis_tdata(m_axis_tdata),   .m_axis_tlast(m_axis_tlast),
+
+        .engine_busy_i(w_engine_busy),
+        .src_bank_i(w_src_bank),
+        .dst_bank_i(w_dst_bank),
+        .m_axis_busy_o(w_m_axis_busy),
 
         // Instruction FIFO
         .ctrl_inst_data_o(w_inst_data), .ctrl_inst_empty_o(w_inst_empty), .ctrl_inst_read_i(w_inst_read),
@@ -182,13 +189,19 @@ module tensor_processing_unit_top #(
             if (slv_reg_rden) begin
                 axi_rvalid_reg <= 1'b1;
                 
-                // MUX BỘ NHỚ LƯU TRẠNG THÁI (STATUS REGISTERS)
-                case (axi_araddr_reg[7:0])
-                    8'h00: axi_rdata_reg <= {31'd0, ctrl_mac_done}; // CPU đọc 0x00 để biết tính xong chưa
-                    8'h04: axi_rdata_reg <= {31'd0, finish_irq_o};  // Đọc trạng thái cờ ngắt
-                    // Bạn có thể map thêm các thanh ghi gỡ lỗi (debug) ở đây
-                    default: axi_rdata_reg <= 32'hDEADBEEF; // Báo hiệu đọc sai địa chỉ
-                endcase
+                if (axi_araddr_reg >= 32'h0000_0100) begin
+                    axi_rdata_reg <= 32'hDEADBEEF;
+                end else begin
+                    unique case (axi_araddr_reg[11:0])
+                        12'h000: axi_rdata_reg <= {31'd0, ctrl_mac_done};
+                        12'h004: axi_rdata_reg <= {31'd0, finish_irq_o};
+                        12'h008: axi_rdata_reg <= 32'hDEADBEEF;
+                        12'h02C: axi_rdata_reg <= {31'd0, w_m_axis_busy};
+                        12'h02D: axi_rdata_reg <= {30'd0, w_src_bank};
+                        12'h02E: axi_rdata_reg <= {30'd0, w_dst_bank};
+                        default: axi_rdata_reg <= 32'hDEADBEEF;
+                    endcase
+                end
             end else if (axi_rvalid_reg && s_axi_rready) begin
                 // CPU đã nhận được dữ liệu, tắt cờ valid
                 axi_rvalid_reg <= 1'b0;
@@ -226,6 +239,7 @@ module tensor_processing_unit_top #(
         .ifm_w_o(w_ifm_w), .ifm_h_o(w_ifm_h), .ifm_c_o(w_ifm_c), .ofm_c_o(w_ofm_c),
         .knl_size_o(w_knl_size), .stride_o(w_stride), .shift_amt_o(w_shift_amt),
         .relu_en_o(w_relu_en), .pool_type_o(w_pool_type),
+        .engine_busy_o(w_engine_busy),
         .finish_irq_o(finish_irq_o)
     );
 
@@ -320,13 +334,11 @@ module tensor_processing_unit_top #(
     // =========================================================
     // 6. PROCESSING ELEMENT ARRAY (PEA)
     // =========================================================
-    // Route AXI-Lite writes to PEA config if address is in 0x100 - 0x3FF
-    logic slv_reg_wren;
     logic w_pea_cfg_we;
-    
-    assign slv_reg_wren = s_axi_wvalid && s_axi_awvalid;
-    // Chỉ kích hoạt khi có xung Write và địa chỉ nằm trong dải 0x100 - 0x3FF
-    assign w_pea_cfg_we = slv_reg_wren && (s_axi_awaddr >= 32'h0000_0100) && (s_axi_awaddr < 32'h0000_0600);
+
+    assign w_pea_cfg_we = write_accept
+                       && (s_axi_awaddr >= 32'h0000_0100)
+                       && (s_axi_awaddr < 32'h0000_0600);
 
     pea_top #(
         .DATA_WIDTH(8),
